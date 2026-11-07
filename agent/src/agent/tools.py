@@ -48,6 +48,10 @@ from agent.api_client.models import (
 )
 from agent.facts import Facts
 from agent.guard import ReplyGuard
+from agent.gujarati import lines as gu_lines
+from agent.gujarati import numbers as gu_numbers
+from agent.gujarati import understanding as gu_understanding
+from agent.gujarati.lines import GujaratiLines
 from agent.prompts import LOOKUP_TOOLS, build_instructions
 from agent.speakable import (
     join_or,
@@ -176,6 +180,7 @@ _NOT_A_NAME = {
     "n a", "na", "name", "not given", "not provided", "name omitted", "omitted", "sir", "madam", "mr",
     "mrs", "ms",
 }  # fmt: skip
+_NOT_A_NAME_GU = {"મહેમાન", "ગ્રાહક", "કોલર", "નામ", "ખબર નથી", "અજાણ્યા", "સાહેબ", "બેન", "ભાઈ"}
 # Placeholders like "[name omitted]" or "<name>": an LLM once booked a table under one.
 _PLACEHOLDER = re.compile(r"[\[\]<>{}]")
 
@@ -215,6 +220,8 @@ class CallState:
     caller_phone: str | None = None  # from the phone line or the guest's own chat account: trusted
     given_phone: str | None = None  # said by the caller: read back before use
     chat: bool = False  # a text chat: the guest reads each line instead of hearing it
+    language: str = "en"  # what the call is in, for the prompt and the call log
+    gu: GujaratiLines | None = None  # set on a Gujarati call: its lines replace the English ones
     draft: BookingDraft = field(default_factory=BookingDraft)
     asked: tuple[str, str] | None = None  # the detail prepare_booking last asked for, and its line
     done_line: str | None = None  # what the caller heard when the last confirm_action went through
@@ -239,10 +246,14 @@ class CallState:
 
     def show_code(self, code: str) -> str:
         """A booking code as the guest takes it in: spelled out on a call, as written in a chat."""
+        if self.gu:
+            return gu_numbers.spell_code(code)
         return code if self.chat else spell_code(code)
 
     def show_phone(self, e164: str) -> str:
         """A phone number read back: digit by digit on a call, written out in a chat."""
+        if self.gu:
+            return gu_numbers.speak_phone(e164)
         return write_phone(e164) if self.chat else speak_phone(e164)
 
     @property
@@ -271,12 +282,16 @@ class CallState:
 
     def describe(self, res: Reservation) -> str:
         start = res.start.astimezone(self.tz)
+        if self.gu:
+            return self.gu.describe(res.party_size, res.guest_name, start, self.today())
         day = speak_day(start.date(), self.today())
         return f"a table for {res.party_size} under {res.guest_name}, {day} at {speak_time(start)}"
 
     def when(self, start: datetime) -> str:
         """ "on Tuesday at 8 PM": for running speech; read-backs use the full date."""
         start = start.astimezone(self.tz)
+        if self.gu:
+            return self.gu.when(start, self.today())
         return f"{on_day(start.date(), self.today())} at {speak_time(start)}"
 
 
@@ -304,12 +319,16 @@ def resolve_day(s: CallState, said: str) -> date | str:
         return date.fromisoformat(raw)
     except ValueError:
         pass
+    if gu_understanding.has_gujarati(raw):  # "આવતા મંગળવારે" reads as "next tuesday" from here on
+        raw = gu_understanding.day_words(raw)
     words = re.sub(r"[^a-z0-9 ]", " ", raw).split()
     calendar = [d.date for d in s.restaurant.calendar]  # starts today
     if not words or not calendar:
         return ASK_WHICH_DAY
     if "today" in words or "tonight" in words:
         return calendar[0]
+    if "overmorrow" in words:  # from "પરમ દિવસે": English has no one word for it
+        return calendar[2]
     if "tomorrow" in words:
         return calendar[1]
     weekday = next((name for name in _WEEKDAYS if any(w in (name, name[:3]) for w in words)), None)
@@ -341,7 +360,7 @@ def resolve_day(s: CallState, said: str) -> date | str:
 def real_name(guest_name: str | None) -> str | None:
     """The caller's name, or None for the stand-ins an LLM writes when it doesn't have one."""
     name = " ".join((guest_name or "").split())[:NAME_MAX]
-    if _PLACEHOLDER.search(name):
+    if _PLACEHOLDER.search(name) or name in _NOT_A_NAME_GU:
         return None
     return None if re.sub(r"[\W_]+", " ", name.lower()).strip() in _NOT_A_NAME else name
 
@@ -361,6 +380,8 @@ def _availability_reply(availability: Availability) -> str:
 
 def _taken_line(s: CallState, day: date, at: time, availability: Availability) -> str:
     """The requested time is gone: say so first, then the nearest free times."""
+    if s.gu:
+        return _taken_line_gu(s, day, at, availability)
     if not availability.slots:
         return f"Sorry, we're fully booked {on_day(day, s.today())}. Would another day work?"
     times = []
@@ -370,7 +391,19 @@ def _taken_line(s: CallState, day: date, at: time, availability: Availability) -
     return f"Sorry, {speak_time(at)} is taken. I can do {join_or(times)}. Would one of those work?"
 
 
+def _taken_line_gu(s: CallState, day: date, at: time, availability: Availability) -> str:
+    assert s.gu is not None
+    if not availability.slots:
+        return s.gu.fully_booked(day, s.today())
+    starts = [slot.start.astimezone(s.tz) for slot in availability.slots]
+    same_day = [start for start in starts if start.date() == day]
+    other_days = [s.when(start) for start in starts if start.date() != day]
+    return s.gu.taken(datetime.combine(day, at, s.tz), same_day, other_days)
+
+
 def _goodbye(s: CallState) -> str:
+    if s.gu:
+        return s.gu.goodbye(s.restaurant.name, s.booked_on, s.today())
     if s.booked_on:
         thanks = "Thanks" if s.chat else "Thanks for calling"
         return f"{thanks}, and we'll see you {on_day(s.booked_on, s.today())}! Goodbye."
@@ -388,7 +421,7 @@ def _last_words(context: RunContext[CallState], role: str) -> str:
 
 def caller_is_done(caller_words: str, agent_line: str) -> bool:
     """Whether the caller's last words let end_call hang up: a goodbye, or "no" to "anything else?"."""
-    if _GOODBYE.search(caller_words):
+    if _GOODBYE.search(caller_words) or gu_understanding.is_done(caller_words, agent_line):
         return True
     return bool(_ANYTHING_ELSE.search(agent_line)) and bool(_NOTHING_ELSE.match(caller_words))
 
@@ -399,6 +432,9 @@ def closes_the_call(caller_words: str, agent_line: str) -> bool:
     Stricter than caller_is_done: every word must be a closing word, and without a goodbye in it
     the agent must just have asked "anything else?" ("Thanks." can also answer "Here's your code.").
     """
+    # Before the English check, which would drop the Gujarati and hear only the "bye" in a longer turn.
+    if gu_understanding.has_gujarati(caller_words) or gu_understanding.asked_anything_else(agent_line):
+        return gu_understanding.closes_the_call(caller_words, agent_line)
     words = re.sub(r"[^a-z' ]", " ", caller_words.lower().replace("’", "'")).split()
     if not words or any(w.strip("'") not in _CLOSING_WORDS for w in words):
         return False
@@ -411,8 +447,10 @@ def _caller_is_done(context: RunContext[CallState]) -> bool:
     return caller_is_done(_last_words(context, "user"), _last_words(context, "assistant"))
 
 
-def _phone_retry_line(heard: str, *, chat: bool = False) -> str:
+def _phone_retry_line(heard: str, *, chat: bool = False, gu: GujaratiLines | None = None) -> str:
     """What to say when a phone number didn't take: what was heard, so the caller knows what to fix."""
+    if gu:
+        return gu.phone_retry(heard)
     if not heard:
         return (ASK_IN_CHAT if chat else ASK)["phone"][1]
     n = len(heard)
@@ -437,7 +475,12 @@ def _wants_to_hang_up(chat_ctx: llm.ChatContext) -> bool:
 
 def _instructions(state: CallState, **kwargs) -> str:
     return build_instructions(
-        state.restaurant, caller_id_known=state.caller_phone is not None, chat=state.chat, **kwargs
+        state.restaurant,
+        caller_id_known=state.caller_phone is not None,
+        chat=state.chat,
+        language=state.language,
+        gender=state.gu.gender if state.gu else "male",
+        **kwargs,
     )
 
 
@@ -531,7 +574,7 @@ class Receptionist(Agent):
         async def filler() -> None:
             await asyncio.sleep(FILLER_AFTER_SECONDS)
             s.filler_spoken_in = speech_id
-            say(random.choice(FILLERS), add_to_chat_ctx=False)
+            say(random.choice(gu_lines.FILLERS if s.gu else FILLERS), add_to_chat_ctx=False)
 
         task = asyncio.create_task(filler())
         try:
@@ -567,7 +610,10 @@ class Receptionist(Agent):
     ) -> ToolResult:
         """Ask for one missing booking detail, in other words if the caller has just been asked."""
         s = context.userdata
-        lines = ASK_IN_CHAT.get(detail, ASK[detail]) if s.chat else ASK[detail]
+        if s.gu:
+            lines = gu_lines.ASK[detail]
+        else:
+            lines = ASK_IN_CHAT.get(detail, ASK[detail]) if s.chat else ASK[detail]
         first, again = (line.format(**fmt) for line in lines)
         asked_just_now = (
             s.asked is not None
@@ -714,7 +760,8 @@ class Receptionist(Agent):
         if draft.day is None:
             return self._ask(context, "day", "Asked which day.")
         if draft.time is None:
-            return self._ask(context, "time", "Asked what time.", day=on_day(draft.day, s.today()))
+            day_said = gu_numbers.speak_day(draft.day, s.today()) if s.gu else on_day(draft.day, s.today())
+            return self._ask(context, "time", "Asked what time.", day=day_said)
         party_size, day, time = draft.party_size, draft.day, draft.time
         at = _parse_time(time)
         assert at is not None  # checked when it was given
@@ -737,7 +784,10 @@ class Receptionist(Agent):
         start = availability.slots[0].start.astimezone(s.tz)
         heard_free = s.told_free == (day, time, party_size)
         s.told_free = (day, time, party_size)
-        news = "" if heard_free else f"Good news, we have a table for {party_size} {s.when(start)}."
+        if s.gu:
+            news = "" if heard_free else s.gu.free(party_size, start, s.today())
+        else:
+            news = "" if heard_free else f"Good news, we have a table for {party_size} {s.when(start)}."
         name = draft.name
         if name is None:
             return self._ask(context, "name", "It's free. Asked for the name.", lead=news)
@@ -748,13 +798,12 @@ class Receptionist(Agent):
             phone_number = said if len(spoken_digits(said)) >= 6 else None
         phone = self._accept_phone(s, phone_number)
         if phone is None and phone_number:  # a number came, but not a whole one: say what was heard
-            line = _phone_retry_line(spoken_digits(phone_number), chat=s.chat)
+            line = _phone_retry_line(spoken_digits(phone_number), chat=s.chat, gu=s.gu)
             s.asked = ("phone", line)
             return self._say(context, line, "The number wasn't complete. Asked for it again.")
         if phone is None:
-            return self._ask(
-                context, "phone", "It's free. Asked for a phone number.", lead=news or f"Thanks, {name}."
-            )
+            thanks = "ઠીક છે." if s.gu else f"Thanks, {name}."
+            return self._ask(context, "phone", "It's free. Asked for a phone number.", lead=news or thanks)
         request = CreateReservationRequest(
             restaurant_id=s.restaurant.id,
             idempotency_key=uuid4(),
@@ -767,6 +816,15 @@ class Receptionist(Agent):
         )
         s.pending = PendingAction("book", request, prepared_in=context.speech_handle.id)
         s.asked = None
+        if s.gu:
+            details = s.gu.describe(party_size, name, start, s.today())
+            lead = random.choice(gu_lines.READ_BACK) if heard_free else "સરસ, એ સમયે જગ્યા છે."
+            phone_said = None if s.caller_phone else s.show_phone(phone)
+            return self._say(
+                context,
+                s.gu.read_back_booking(lead, details, phone_said, draft.notes),
+                f"Read back {details}. Not booked yet: wait for a clear yes.",
+            )
         day_and_time = f"{speak_day(start.date(), s.today())} at {speak_time(start)}"
         details = f"a table for {party_size} under {name}, {day_and_time}"
         if not s.caller_phone:
@@ -859,6 +917,14 @@ class Receptionist(Agent):
         s.pending = PendingAction(
             "change", request, prepared_in=context.speech_handle.id, reservation_id=res.id
         )
+        if s.gu:
+            old = f"{s.gu.when(current, s.today())}, {gu_lines.party(res.party_size)} માટે ટેબલ"
+            new = f"{s.gu.when(start, s.today())}, {gu_lines.party(party_size)} માટે"
+            return self._say(
+                context,
+                s.gu.read_back_change(random.choice(gu_lines.READ_BACK), old, new),
+                f"Read back: {old} becomes {new}. Not changed yet: wait for a clear yes.",
+            )
         change = (
             f"your table for {res.party_size} {s.when(current)} becomes a table for {party_size}, "
             f"{speak_day(day, s.today())} at {speak_time(start)}"
@@ -880,6 +946,13 @@ class Receptionist(Agent):
         s.pending = PendingAction(
             "cancel", request, prepared_in=context.speech_handle.id, reservation_id=res.id
         )
+        if s.gu:
+            booking = s.describe(res)
+            return self._say(
+                context,
+                s.gu.read_back_cancel(booking),
+                f"Read back the cancellation of {booking}. Not cancelled yet: wait for a clear yes.",
+            )
         booking = f"your table for {res.party_size} {s.when(res.start)}, under {res.guest_name}"
         return self._say(
             context,
@@ -922,18 +995,23 @@ class Receptionist(Agent):
             s.booked_on = res.start.astimezone(s.tz).date()
             s.draft = BookingDraft(name=s.draft.name)  # a second booking starts afresh, same caller
             line = f"You're all set! Your booking code is {s.show_code(res.code)}."
+            if s.gu:
+                line = s.gu.booked(s.show_code(res.code))
         elif pending.kind == "change":
             line = (
                 f"Done, it's now a table for {res.party_size} {s.when(res.start)}. "
                 f"Your code is still {s.show_code(res.code)}."
             )
+            if s.gu:
+                table = f"{s.when(res.start)}, {gu_lines.party(res.party_size)} માટે ટેબલ"
+                line = s.gu.changed(table, s.show_code(res.code))
         else:
             s.booked_on = None
-            line = "Done, that booking is cancelled."
+            line = s.gu.cancelled() if s.gu else "Done, that booking is cancelled."
         s.done_line = line
         return self._say(
             context,
-            f"{line} {random.choice(ANYTHING_ELSE)}",
+            f"{line} {random.choice(gu_lines.ANYTHING_ELSE if s.gu else ANYTHING_ELSE)}",
             f"Done and told the caller. {res.summary}",
             must_hear=True,
         )
@@ -975,10 +1053,12 @@ class Receptionist(Agent):
         except ApiError as e:
             return e.say
         s.outcomes.append("message_taken")
+        # The API's summary is English and goes straight to the voice, so a Gujarati call has its own.
+        told = s.gu.message_taken() if s.gu else receipt.summary
         return self._say(
             context,
-            f"{receipt.summary} {random.choice(ANYTHING_ELSE)}",
-            f"Message saved and the caller told: {receipt.summary}",
+            f"{told} {random.choice(gu_lines.ANYTHING_ELSE if s.gu else ANYTHING_ELSE)}",
+            f"Message saved and the caller told: {told}",
             must_hear=True,
         )
 

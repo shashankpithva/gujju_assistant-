@@ -69,6 +69,10 @@ Setup:
 
 Limits: one call at a time, allowed callers only, and the restaurant background hum isn't sent. Replies are a little slower than on a phone line, because the audio crosses Telegram as well as LiveKit. For real guests, use the phone number or WhatsApp Business calling.
 
+## Gujarati calls
+
+Set `AGENT_LANGUAGE=gu` and `SARVAM_API_KEY`, and calls run in Gujarati, with Gujarati-English mixing, on Sarvam Saaras and Bulbul. English stays the default and is unchanged. Start with [agent/docs/gujarati/README.md](../agent/docs/gujarati/README.md) for running and testing it, and [audit.md](../agent/docs/gujarati/audit.md) for what was found and the fine-tuning assessment.
+
 ## Latency
 
 Every agent reply logs one line:
@@ -259,7 +263,7 @@ LiveKit builds the image itself from `agent/` with the [Dockerfile](../agent/Doc
 **Restaurant data:** `DATA_SOURCE=sample` is the fastest choice for a public demo. Tool calls stay inside the agent, with no API or database round trip. Bookings last until the agent restarts or is redeployed.
 
 **Secrets:** LiveKit sets `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` itself and won't accept them as secrets. Put everything else in `agent/.env.production`, which git and the build upload both ignore:
-- the Deepgram, Groq and Google keys
+- the Deepgram, Groq and Google keys, and `SARVAM_API_KEY` with the `SARVAM_*` settings for Gujarati calls
 - `LLM_PROVIDER`, `GROQ_MODELS`, `GEMINI_MODEL` and `GEMINI_THINKING_LEVEL`
 - `MAX_CALL_SECONDS` and `SILENCE_CHECK_IN_SECONDS`
 - `DATA_SOURCE=sample`, or `DATA_SOURCE=api` with `API_BASE_URL` set to the web app's production URL and `AGENT_API_KEY`

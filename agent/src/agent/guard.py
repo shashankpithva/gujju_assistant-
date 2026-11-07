@@ -27,6 +27,9 @@ from typing import TYPE_CHECKING
 
 from livekit.agents import llm
 
+from agent.gujarati import lines as gu_lines
+from agent.gujarati.numbers import amounts_in, code_from_speech, to_ascii_digits
+
 if TYPE_CHECKING:
     from agent.tools import CallState
 
@@ -38,8 +41,9 @@ NO_SUCH_CODE = "Sorry, I don't have a booking code for that yet."
 NO_SUCH_PRICE = "Sorry, I don't have that price."
 
 # A sentence ends at . ! or ? followed by a space and a capital or a quote, so "Rs. 380" and "7.30"
-# stay whole.
-_SENTENCE_END = re.compile(r"[.!?]+[\"')\]]*\s+(?=[A-Z\"'(])")
+# stay whole. Gujarati has no capitals, so any Gujarati letter counts: without it a Gujarati reply
+# would wait here until the LLM had finished, and the voice couldn't start on the first sentence.
+_SENTENCE_END = re.compile(r"(?<!રૂ)[.!?।]+[\"')\]]*\s+(?=[A-Z\"'(\u0a80-\u0aff])")
 
 # Claims that something was done, by kind. "Is booked" alone is left out: "Sorry, 7:30 is booked"
 # means the time is taken.
@@ -69,6 +73,31 @@ _CLAIMS = {
         re.IGNORECASE,
     ),
 }
+# The same claims in Gujarati, with the English word where callers and the LLM mix it in. No \b: it
+# doesn't work on Gujarati (see gujarati/__init__.py). "સાડા સાત વાગ્યે બુક થઈ ગયું છે" says a time is
+# taken, so a claim needs "તમારું ..." or "મેં ...": something done for this caller, not to the table.
+_WHOSE = r"(?:તમારું|તમારો|તમારી|તમારા|મેં)[^.?!।]*?"
+_DONE_VERB = r"(?:થઈ|થઇ)\s*(?:ગયું|ગયો|ગઈ|ગઇ)|(?:કરી|કરાવી)\s*(?:દીધું|દીધો|દીધી|લીધું|લીધો|લીધી)"
+_NOT_NEGATED = r"(?!\s*(?:નથી|નહીં|નહિ))"  # "હજી થયું નથી" says the opposite
+# Cancel and change come first: "તમારું બુકિંગ રદ કરી દીધું" also holds the word for a booking.
+_GU_CLAIMS = {
+    "cancel": re.compile(rf"(?:કેન્સલ|cancel|રદ)\s*(?:{_DONE_VERB}){_NOT_NEGATED}", re.IGNORECASE),
+    "change": re.compile(
+        rf"(?:બદલી|બદલાવી|ફેરફાર\s*કરી|change\s*કરી)\s*(?:દીધું|દીધો|દીધી|લીધું|લીધો|લીધી){_NOT_NEGATED}"
+        rf"|(?:બદલાઈ|બદલાઇ)\s*(?:ગયું|ગયો|ગઈ){_NOT_NEGATED}",
+        re.IGNORECASE,
+    ),
+    "book": re.compile(
+        rf"{_WHOSE}(?:બુક|book|રિઝર્વ|reserve|કન્ફર્મ|confirm)[^.?!।]*?(?:{_DONE_VERB}|થયું|થયો|કર્યું|કર્યો){_NOT_NEGATED}"
+        r"|(?:બુક|book|રિઝર્વ|reserve)\s*(?:કરી|કરાવી)\s*(?:દીધું|દીધો|દીધી|લીધું|લીધો|લીધી)"
+        r"|બુકિંગ\s*(?:કન્ફર્મ\s*)?(?:થઈ|થઇ)\s*ગયું",
+        re.IGNORECASE,
+    ),
+    # A bare "થઈ ગયું!" claims whatever was being done.
+    "any": re.compile(
+        r"^[\s,.!]*(?:(?:બરાબર|સરસ|હા|ઓકે|ok)[\s,.!]+)?(?:બધું\s*)?(?:થઈ|થઇ)\s*ગયું[\s,.!]*$", re.IGNORECASE
+    ),
+}
 _DONE = {
     "book": ("booked", "changed"),
     "cancel": ("cancelled",),
@@ -82,13 +111,14 @@ _WRITTEN_CODE = re.compile(r"\b(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{4,6}\b"
 _SPELLED_CODE = re.compile(r"\b[A-Za-z0-9](?:[\s,.-]+[A-Za-z0-9]\b){3,5}")
 _TIME = re.compile(r"^\d{1,4}(?:AM|PM)$")  # "11PM" and "1130AM" are times, not codes
 _PRICE = re.compile(
-    r"(?:₹|\brs\.?|\binr)\s?(\d[\d,]*)|(\d[\d,]*)\s?(?:rupees?|rs\b|inr\b)",
+    r"(?:₹|\brs\.?|\binr|રૂ\.)\s?(\d[\d,]*)|(\d[\d,]*)\s?(?:rupees?|rs\b|inr\b|રૂપિયા|રૂપિયે|રૂ\.)",
     re.IGNORECASE,
 )
 _NUMBER = re.compile(r"\d[\d,]*")
 
 
 def codes_in(text: str) -> set[str]:
+    text = code_from_speech(text)  # "કે, સાત, ક્યૂ, બે" -> "K 7 Q 2"
     codes = {c for c in _WRITTEN_CODE.findall(text) if not _TIME.match(c)}
     for match in _SPELLED_CODE.finditer(text):
         code = re.sub(r"[\s,.-]+", "", match.group(0)).upper()
@@ -98,7 +128,8 @@ def codes_in(text: str) -> set[str]:
 
 
 def prices_in(text: str) -> set[int]:
-    return {int((a or b).replace(",", "")) for a, b in _PRICE.findall(text)}
+    written = {int((a or b).replace(",", "")) for a, b in _PRICE.findall(to_ascii_digits(text))}
+    return written | amounts_in(text)  # "ત્રણસો એંસી રૂપિયા"
 
 
 def numbers_in(text: str) -> set[int]:
@@ -107,9 +138,10 @@ def numbers_in(text: str) -> set[int]:
 
 def claimed_done(sentence: str) -> str | None:
     """The kind of action a sentence says was done ("book", "cancel" or "change"), if any."""
-    for kind, pattern in _CLAIMS.items():
-        if pattern.search(sentence):
-            return kind
+    for claims in (_CLAIMS, _GU_CLAIMS):
+        for kind, pattern in claims.items():
+            if pattern.search(sentence):
+                return kind
     return None
 
 
@@ -194,13 +226,17 @@ class ReplyGuard:
         return kind in ("book", "any") and bool(s.known_codes)
 
     def _problem(self, sentence: str) -> tuple[str, str] | None:
+        gujarati = self._state.gu is not None
         kind = claimed_done(sentence)
         if kind is not None and not self._done(kind):
-            return (f"claims a {kind} that didn't happen", NOT_DONE_YET)
+            safe = gu_lines.NOT_DONE_YET if gujarati else NOT_DONE_YET
+            return (f"claims a {kind} that didn't happen", safe)
         if unknown := codes_in(sentence) - self._codes:
-            return (f"booking code {sorted(unknown)} from nowhere", NO_SUCH_CODE)
+            safe = gu_lines.NO_SUCH_CODE if gujarati else NO_SUCH_CODE
+            return (f"booking code {sorted(unknown)} from nowhere", safe)
         if unknown := prices_in(sentence) - self._amounts:
-            return (f"price {sorted(unknown)} not in the restaurant's data", NO_SUCH_PRICE)
+            safe = gu_lines.NO_SUCH_PRICE if gujarati else NO_SUCH_PRICE
+            return (f"price {sorted(unknown)} not in the restaurant's data", safe)
         return None
 
 

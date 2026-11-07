@@ -1,0 +1,160 @@
+# Regional speech, CALLER SIDE ONLY, and approximate. These were written by an AI from general
+# knowledge of each dialect, not recorded from speakers, so each is tagged *_approx and must be
+# checked or replaced by native speakers of that region. They exist so comprehension gets tested on
+# more than textbook Gujarati. The agent answers in standard Gujarati and never imitates a dialect.
+%category=regional register=informal speaker=adult region=kathiawadi_approx mix=none
+
+C: હાલો ભાઈ, ટેબલ મળહે કે નઈ?
+A: હા, જોઈ લઉં. કેટલા જણ હશો?
+
+C: અમે હાંજે આવવી, ચાર જણ.
+A: સારું, સાંજે ચાર જણ. કયા દિવસે?
+
+C: કાલ્ય આવી જાંવી, શું કયો છો?
+A: કાલે આવવું છે, બરાબર. કેટલા વાગ્યે?
+
+C: ઈ વાનગી કેટલાની સે?
+A: કઈ વાનગીનો ભાવ જોઈએ છે?
+
+C: ભાઈ, આ હું સે તમારે ન્યાં?
+A: અહીં રેસ્ટોરન્ટ છે. ટેબલ કે મેનુ, શું જોઈએ?
+
+C: મારે ન્યાં આવવું સે, રસ્તો કેવો?
+A: સરનામું કહી દઉં. બાર, રેસિડેન્સી રોડ.
+
+C: મને ખબર નથ, દીકરાને પૂછું.
+A: કોઈ વાંધો નહીં. પૂછીને ફોન કરજો.
+
+C: હમણાં નઈ, પસી ફોન કરું.
+A: સારું, ફાવે ત્યારે ફોન કરજો.
+
+C: ઈમાં તીખું નથ ને?
+A: કઈ વાનગીનું પૂછો છો?
+
+C: બાપુ, રોટલો મળહે?
+A: રોટલો મેનુમાં નથી. તંદૂરી રોટી છે.
+
+C: હાલો તંયે, રાખી દ્યો.
+A: સારું, બુક કરી દઉં છું.
+
+C: હવે મેલો ને ઈ વાત.
+A: સારું. બીજું કંઈ મદદ કરું?
+
+C: કાઠિયાવાડી જમવાનું સે?
+A: એ મેનુમાં નથી. બીજી વેજ વાનગી કહી દઉં?
+
+@region=surti_approx
+C: ટેબલ મલહે કે ની?
+A: હા, જોઈ લઉં. કેટલા જણ?
+
+@region=surti_approx
+C: આપડે કાલે આવવાના, હું કરવાનું?
+A: કાલે કેટલા જણ અને કેટલા વાગ્યે આવશો?
+
+@region=surti_approx
+C: મને ની ખબર, વાઈફને પૂછું.
+A: કોઈ વાંધો નહીં. પૂછી લો.
+
+@region=surti_approx
+C: એ તો ની ચાલે.
+A: સારું, બીજો કયો સમય ફાવશે?
+
+@region=surti_approx
+C: તમે હું બોલો છો, હમજાતું ની.
+A: માફ કરજો. કેટલા જણ આવશો?
+
+@region=surti_approx
+C: ઘારી ને લોચો મલે?
+A: એ મેનુમાં નથી. સ્ટાર્ટરમાં સમોસા છે.
+
+@region=surti_approx
+C: એ ભાઈ, જરા જલદી કરો ની.
+A: હા, કેટલા જણ અને કયો દિવસ?
+
+@region=surti_approx
+C: અમારે હુરત થી આવવાનું છે.
+A: સારું, કયા દિવસે આવવું છે?
+
+@region=surti_approx
+C: હારું, રાખી દો.
+A: સરસ, બુક કરી દઉં છું.
+
+@region=charotar_approx
+C: હોં ભઈ, તમે ચ્યોં આયા?
+A: અમે રેસિડેન્સી રોડ પર છીએ, બ્રિગેડ રોડ જંક્શન પાસે.
+
+@region=charotar_approx
+C: ઓંય ટેબલ મલે?
+A: હા, મળશે. કયા દિવસે?
+
+@region=charotar_approx
+C: અમે આણંદથી આઈશું, છ જણ.
+A: સારું, છ જણ. કયા દિવસે આવશો?
+
+@region=charotar_approx
+C: ઓમ તો હારું છે, પણ મોંઘું તો નહિ ને?
+A: મેઇન વાનગી 320 થી 620 રૂપિયા છે.
+
+@region=charotar_approx
+C: ચ્યારે આવું તો ટેબલ મલે?
+A: કયા દિવસે અને કેટલા જણ? જોઈ લઉં.
+
+@region=charotar_approx
+C: પટેલનું ટેબલ રાખજો, ઓંમનું ઓંમ.
+A: પટેલના નામે રાખું છું. કેટલા જણ?
+
+@region=north_gujarat_approx
+C: ચ્યમ છો ભઈ, ટેબલ મળશે?
+A: મજામાં. હા, જોઈ લઉં. કેટલા જણ?
+
+@region=north_gujarat_approx
+C: હેંડો ત્યારે, રાખી દો.
+A: સારું, બુક કરી દઉં છું.
+
+@region=north_gujarat_approx
+C: મહેસાણાથી આવવાનું, ચ્યોં છે તમારું?
+A: અમે રેસિડેન્સી રોડ પર છીએ. સરનામું કહી દઉં?
+
+@region=north_gujarat_approx
+C: મને ઓંય નથી ખબર.
+A: કોઈ વાંધો નહીં, સરનામું કહી દઉં.
+
+@region=north_gujarat_approx
+C: ચમ, આજે બંધ છે?
+A: આજે ખુલ્લું છે. સોમવારે જ બંધ હોય.
+
+@region=north_gujarat_approx
+C: હેંડો, પછી વાત કરું.
+A: સારું, ફાવે ત્યારે ફોન કરજો.
+
+@region=kutch_influenced_approx
+C: ભા, ટેબલ મળી વેંધો?
+A: હા, જોઈ લઉં. કેટલા જણ હશો?
+
+@region=kutch_influenced_approx
+C: અસી ભુજથી આવવાના છીએ.
+A: સારું, ભુજથી. કયા દિવસે આવશો?
+
+@region=kutch_influenced_approx
+C: કેડા હાલ છે?
+A: મજામાં, આભાર. બોલો, શું મદદ કરું?
+
+@region=kutch_influenced_approx
+C: મુંજો નામ લખો, હરિલાલ ગઢવી.
+A: હરિલાલ ગઢવીના નામે રાખું છું.
+
+@region=ahmedabad_approx register=informal
+C: અલ્યા, કંઈક મેળ પાડ ને ટેબલનો.
+A: હા, જોઈ લઉં. કેટલા જણ છો?
+
+@region=ahmedabad_approx register=informal
+C: કાકા, આજે જગ્યા છે કે નહિ?
+A: કેટલા જણ અને કેટલા વાગ્યે? જોઈ લઉં.
+
+@region=ahmedabad_approx register=informal
+C: બોસ, ભાવ તો વાજબી રાખજો.
+A: ભાવ મેનુ પ્રમાણે જ રહેશે. કહી દઉં?
+
+@region=ahmedabad_approx register=informal
+C: એક નંબર જમવાનું હોય છે તમારે ત્યાં.
+A: આભાર, સાંભળીને આનંદ થયો. ટેબલ જોઈએ છે?

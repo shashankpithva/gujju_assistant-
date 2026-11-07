@@ -921,6 +921,9 @@ images = [
 openai = [
     { name = "livekit-plugins-openai" },
 ]
+sarvam = [
+    { name = "livekit-plugins-sarvam" },
+]
 silero = [
     { name = "livekit-plugins-silero" },
 ]
@@ -1049,6 +1052,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4f/ab/424a0e6af1be140d39fb6a9a8efba5b533bcf380ff079dce93cdea414ad6/livekit_plugins_openai-1.8.9.tar.gz", hash = "sha256:28f87c225647d08448b13a3a3febb58ab523f1f9333057fa82b5097bc3e41d8b", size = 37643, upload-time = "2026-10-24T02:34:20.922Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/e7/cf1939e7bc7de2b82e66108329cf247a817cb5d77c9a43a6266e49a6c965/livekit_plugins_openai-1.8.9-py3-none-any.whl", hash = "sha256:b7e945398c88a0fb689b8aa309cf6cf1ec1bf54b0cf674f534e58042ea1d47c2", size = 44182, upload-time = "2026-10-24T02:34:19.39Z" },
+]
+
+[[package]]
+name = "livekit-plugins-sarvam"
+version = "1.8.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx2" },
+    { name = "livekit-agents", extra = ["codecs", "openai"] },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f6/9f/1f341501121c4eb1b0a605a04835e658c73f42166363b376af5bd6d6b121/livekit_plugins_sarvam-1.8.9.tar.gz", hash = "sha256:0fa9aa03b68ac514037e60b65dee175db303dd66da6541b1af74e57f5bed5aa5", size = 50741, upload-time = "2026-10-24T02:34:45.5Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/f3/ea0fccefb2661c821b25cc9d2cedb84e87a8e005a183f5a315dacb9d558e/livekit_plugins_sarvam-1.8.9-py3-none-any.whl", hash = "sha256:7c78874769de07a71e08566b287488ea078bc606cface2306450654955450b1f", size = 55136, upload-time = "2026-10-24T02:34:44.087Z" },
 ]
 
 [[package]]
@@ -1862,7 +1879,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
-    { name = "livekit-agents", extra = ["deepgram", "google", "groq", "silero"] },
+    { name = "livekit-agents", extra = ["deepgram", "google", "groq", "sarvam", "silero"] },
     { name = "livekit-plugins-noise-cancellation" },
     { name = "python-dotenv" },
     { name = "tzdata" },
@@ -1882,7 +1899,7 @@ telegram-call = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "livekit-agents", extras = ["deepgram", "google", "groq", "silero"], specifier = ">=1.8.9" },
+    { name = "livekit-agents", extras = ["deepgram", "google", "groq", "sarvam", "silero"], specifier = ">=1.8.9" },
     { name = "livekit-plugins-noise-cancellation", specifier = ">=0.3.2" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "tzdata", specifier = ">=2026.5" },

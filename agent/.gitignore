@@ -19,6 +19,9 @@ htmlcov/
 .cache/
 evals/results/
 
+# Voices of real people, recorded for the STT benchmark: never commit these
+data/gujarati/recordings/
+
 # Sample-data bookings saved between test calls
 .sample_state.json
 

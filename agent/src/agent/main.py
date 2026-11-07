@@ -28,21 +28,29 @@ from livekit.agents import (
     JobProcess,
     TurnHandlingOptions,
     cli,
-    inference,
     llm,
     room_io,
 )
-from livekit.plugins import deepgram, google, groq, noise_cancellation, silero
+from livekit.plugins import google, groq, noise_cancellation, silero
 
 from agent.api_client import SAMPLE_RESTAURANT_PHONE, ApiError, make_restaurant_api
 from agent.call_limits import CallLimits
 from agent.call_log import build_call_log, save_call_log
 from agent.facts import load_facts
+from agent.gujarati import lines as gu_lines
+from agent.gujarati.lines import GujaratiLines
+from agent.languages import (
+    agent_language,
+    build_hearing,
+    build_turn_detection,
+    build_voice,
+    voice_gender,
+    voice_text_transforms,
+)
 from agent.metrics import LatencyTracker
 from agent.prompts import build_greeting
-from agent.speakable import speak_numbers_digit_by_digit, speak_plain_punctuation
 from agent.tools import CallState, Receptionist, new_call_id
-from agent.turn_taking import QUICK, TurnTaking
+from agent.turn_taking import ENGLISH, GUJARATI, TurnTaking
 
 if TYPE_CHECKING:
     from livekit.agents.voice.room_io.types import NoiseCancellationParams
@@ -268,38 +276,31 @@ async def entrypoint(ctx: JobContext) -> None:
     settings = asyncio.create_task(api.get_restaurant_by_number(call.dialed))
 
     session_llm, llm_label = build_llm()
-    # en-US by default: on Indian-accented test calls (2 Nov 2026) it matched en-IN and beat "multi",
-    # which garbled English names; see docs/agent.md before changing it.
-    stt = deepgram.STT(model="nova-3", language=os.getenv("STT_LANGUAGE", "en-US"))
+    language = agent_language()
+    gujarati = language == "gu"
+    hearing = build_hearing(language, call.channel)
+    gender = voice_gender() if gujarati else "male"
+    pauses = GUJARATI if gujarati else ENGLISH
     # Seconds of silence before "Are you still there?", and again before hanging up.
     silence_seconds = float(os.getenv("SILENCE_CHECK_IN_SECONDS", "10"))
     # Its userdata (the CallState) is set once the restaurant's settings are in.
     session = AgentSession[CallState](
         vad=ctx.proc.userdata["vad"],
-        stt=stt,
+        stt=hearing.stt,
         llm=session_llm,
-        tts=deepgram.TTS(model=os.getenv("TTS_VOICE", "aura-2-andromeda-en")),
+        tts=build_voice(language),
         turn_handling=TurnHandlingOptions(
             # LiveKit's turn model: hosted in dev and on LiveKit Cloud, local "mini" model as fallback.
-            turn_detection=inference.TurnDetector(),
+            turn_detection=build_turn_detection(language),
             # Quick by default; longer only while the caller reads out a phone number (turn_taking.py).
-            endpointing=QUICK,
+            endpointing=pauses.quick,
             # Start the LLM, and the voice for its reply, before the turn is confirmed: when the guess
             # holds, the reply is ready the moment the caller stops. At most one guess per turn, as
             # each is another request against the free tier's tokens-per-minute limit.
             preemptive_generation={"max_retries": 1, "preemptive_tts": True},
-            # Only real words stop the agent mid-sentence: "no, wait" (2 words) does, while
-            # "mm-hmm", a cough, background noise or speaker echo don't. A false stop resumes.
-            interruption={"min_words": 2, "resume_false_interruption": True},
+            interruption=hearing.interruption,
         ),
-        # Plain punctuation for the voice, and phone numbers read digit by digit even when the LLM
-        # writes "9876543210".
-        tts_text_transforms=[
-            "filter_markdown",
-            "filter_emoji",
-            speak_plain_punctuation,
-            speak_numbers_digit_by_digit,
-        ],
+        tts_text_transforms=voice_text_transforms(language, gender),
         user_away_timeout=silence_seconds,
         max_tool_steps=3,
     )
@@ -309,11 +310,12 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx,
         max_call_seconds=float(os.getenv("MAX_CALL_SECONDS", "300")),
         silence_grace_seconds=silence_seconds,
+        language=language,
     )
     receptionist = Receptionist()  # silent until it has the restaurant's settings
     latency = LatencyTracker(llm_model=llm_label)
     latency.attach(session)
-    TurnTaking(session).attach()
+    TurnTaking(session, pauses).attach()
     state: CallState | None = None
     closed = False
 
@@ -385,7 +387,8 @@ async def entrypoint(ctx: JobContext) -> None:
     except ApiError as e:
         if e.code == "not_found":
             logger.error("no restaurant for dialed number %s: %s", call.dialed, e)
-            await limits.hang_up(NOT_SET_UP, reason="no restaurant for this number")
+            not_set_up = gu_lines.NOT_SET_UP if gujarati else NOT_SET_UP
+            await limits.hang_up(not_set_up, reason="no restaurant for this number")
         else:  # the API is down or refused the request (a wrong AGENT_API_KEY): not the number's fault
             logger.error(
                 "couldn't load the restaurant for %s from the tool API at %s (is the web app running?): %s",
@@ -393,19 +396,26 @@ async def entrypoint(ctx: JobContext) -> None:
                 os.getenv("API_BASE_URL"),
                 e,
             )
-            await limits.hang_up(API_DOWN, reason="tool API unavailable")
+            await limits.hang_up(gu_lines.API_DOWN if gujarati else API_DOWN, reason="tool API unavailable")
         return
-    state = CallState(api=api, restaurant=restaurant, call_id=call_id, caller_phone=call.caller_phone)
+    state = CallState(
+        api=api,
+        restaurant=restaurant,
+        call_id=call_id,
+        caller_phone=call.caller_phone,
+        language=language,
+        gu=GujaratiLines(gender) if gujarati else None,
+    )
     state.end_call = limits.end_after
     session.userdata = state
-    logger.info("call started | %s | %s | %s", call_id, call.channel, restaurant.name)
+    logger.info("call started | %s | %s | %s | %s", call_id, call.channel, language, restaurant.name)
 
     await receptionist.begin(state)
     if call.channel == "telegram" and not await caller_audio(ctx.room, call.identity):
         logger.warning(
             "the Telegram call didn't connect within %.0f s; greeting anyway", CALLER_AUDIO_SECONDS
         )
-    session.say(build_greeting(restaurant))
+    session.say(build_greeting(restaurant, language))
     limits.start()
 
     # A faint front-of-house hum, started after the greeting so it doesn't delay it. Room calls only:
@@ -418,10 +428,10 @@ async def entrypoint(ctx: JobContext) -> None:
     async def load_restaurant_facts(state: CallState) -> None:
         # Fetched while the greeting plays, so menu and info questions skip the API afterwards,
         # and the STT learns the dish and street names it would otherwise mishear.
-        facts = await load_facts(api, state.restaurant)
+        facts = await load_facts(api, state.restaurant, language)
         if facts:
             await receptionist.use_facts(state, facts)
-            stt.update_options(keyterm=facts.keyterms)
+            hearing.learn(facts.keyterms)
             logger.info(
                 "restaurant facts in the prompt (%d characters), %d STT keyterms, tools: %s",
                 len(facts.text),

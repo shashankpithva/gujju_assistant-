@@ -51,7 +51,7 @@ def build_call_log(
         dialed_number=dialed_number if channel == "phone" else None,
         started_at=started_at.astimezone(tz),
         ended_at=ended_at.astimezone(tz),
-        language="en",
+        language=state.language,
         outcome=state.outcome(caller_spoke=any(t.speaker == "caller" for t in tracker.turns)),
         recording_url=None,
         turns=turns,

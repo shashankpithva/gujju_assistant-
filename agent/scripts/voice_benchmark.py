@@ -7,18 +7,23 @@ reply. The agent's own log shows where that time went (end of turn, STT, LLM, TT
 Run the agent first (uv run python -m agent.main dev; and the web app when DATA_SOURCE=api), then
 from agent/:
     uv run python scripts/voice_benchmark.py
-Uses LiveKit, Deepgram and LLM quota like a short real call. It books nothing: it never says yes
-to a read-back.
+    uv run python scripts/voice_benchmark.py --language gu    # with AGENT_LANGUAGE=gu on the agent
+Uses LiveKit, Deepgram (or Sarvam) and LLM quota like a short real call. It books nothing: it never
+says yes to a read-back.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import base64
 import hashlib
+import io
 import os
 import statistics
 import time
 import uuid
+import wave
 from collections import deque
 from pathlib import Path
 
@@ -46,6 +51,15 @@ LINES = [
     "Does the paneer tikka have nuts in it?",
 ]
 
+LINES_GU = [
+    "કાલે કેટલા વાગ્યે ખૂલે છે?",
+    "વેજમાં શું શું છે?",
+    "પાર્કિંગ છે?",
+    "મંગળવારે રાત્રે આઠ વાગ્યે બે જણ માટે ટેબલ મળશે?",
+    "નામ આશા છે.",
+    "પનીર ટિક્કામાં શીંગ હોય?",
+]
+
 
 def synthesise(text: str, key: str) -> np.ndarray:
     """The caller's voice: Deepgram Aura, a different voice from the agent's, cached on disk."""
@@ -61,6 +75,29 @@ def synthesise(text: str, key: str) -> np.ndarray:
         )
         resp.raise_for_status()
         path.write_bytes(resp.content)
+    return np.frombuffer(path.read_bytes(), dtype=np.int16)
+
+
+def synthesise_gujarati(text: str, key: str) -> np.ndarray:
+    """The caller's voice for a Gujarati call: a woman's, so it's never the agent talking to itself."""
+    CACHE.mkdir(parents=True, exist_ok=True)
+    path = CACHE / f"gu-{hashlib.sha1(text.encode()).hexdigest()[:12]}.pcm"
+    if not path.exists():
+        resp = httpx.post(
+            "https://api.sarvam.ai/text-to-speech",
+            headers={"api-subscription-key": key},
+            json={
+                "text": text,
+                "target_language_code": "gu-IN",
+                "speaker": "priya",
+                "model": "bulbul:v3",
+                "speech_sample_rate": SAMPLE_RATE,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        with wave.open(io.BytesIO(base64.b64decode(resp.json()["audios"][0]))) as clip:
+            path.write_bytes(clip.readframes(clip.getnframes()))
     return np.frombuffer(path.read_bytes(), dtype=np.int16)
 
 
@@ -164,8 +201,14 @@ class Caller:
 
 async def main() -> None:
     load_dotenv()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--language", choices=["en", "gu"], default="en")
+    args = parser.parse_args()
     caller = Caller()
-    lines = [(text, synthesise(text, os.environ["DEEPGRAM_API_KEY"])) for text in LINES]
+    if args.language == "gu":
+        lines = [(text, synthesise_gujarati(text, os.environ["SARVAM_API_KEY"])) for text in LINES_GU]
+    else:
+        lines = [(text, synthesise(text, os.environ["DEEPGRAM_API_KEY"])) for text in LINES]
     await caller.join()
     caller.first_loud_after = None
     await caller.wait_for_reply(timeout=40)  # the greeting

@@ -16,6 +16,8 @@ import logging
 from livekit.agents import AgentSession, JobContext, UserStateChangedEvent
 from livekit.agents.voice.speech_handle import SpeechHandle
 
+from agent.gujarati import lines as gu_lines
+
 logger = logging.getLogger("agent.call_limits")
 
 CHECK_IN = "Are you still there?"
@@ -33,7 +35,9 @@ class CallLimits:
         *,
         max_call_seconds: float,
         silence_grace_seconds: float = 8.0,
+        language: str = "en",
     ) -> None:
+        self._gujarati = language == "gu"
         self._session = session
         self._ctx = ctx
         self._max_call_seconds = max_call_seconds
@@ -66,13 +70,15 @@ class CallLimits:
             self._timers.append(self._silence)
 
     async def _check_in_then_hang_up(self) -> None:
-        await self._session.say(CHECK_IN)
+        await self._session.say(gu_lines.CHECK_IN if self._gujarati else CHECK_IN)
         await asyncio.sleep(self._silence_grace_seconds)
-        await self.hang_up(SILENCE_GOODBYE, reason="caller silent")
+        goodbye = gu_lines.SILENCE_GOODBYE if self._gujarati else SILENCE_GOODBYE
+        await self.hang_up(goodbye, reason="caller silent")
 
     async def _end_at_time_limit(self) -> None:
         await asyncio.sleep(self._max_call_seconds)
-        await self.hang_up(TIME_UP_GOODBYE, reason="max call length reached")
+        goodbye = gu_lines.TIME_UP_GOODBYE if self._gujarati else TIME_UP_GOODBYE
+        await self.hang_up(goodbye, reason="max call length reached")
 
     async def hang_up(self, goodbye: str, *, reason: str) -> None:
         """Say a fixed goodbye, then end the session and disconnect the caller."""

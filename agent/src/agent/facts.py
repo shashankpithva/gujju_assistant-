@@ -99,14 +99,19 @@ def keyterms_for(restaurant: RestaurantSettings, menu: list[MenuItem], info: lis
     return list(dict.fromkeys(terms))[:MAX_KEYTERMS]
 
 
-async def load_facts(api: RestaurantAPI, restaurant: RestaurantSettings) -> Facts | None:
-    """Menu and info, fetched a few at a time; None if the API isn't answering."""
+async def load_facts(
+    api: RestaurantAPI, restaurant: RestaurantSettings, language: str = "en"
+) -> Facts | None:
+    """Menu and info, fetched a few at a time; None if the API isn't answering.
+
+    `language` asks for staff's per-language wording of each topic; the API falls back to English.
+    """
     gate = asyncio.Semaphore(MAX_PARALLEL)
 
     async def info(topic: str) -> str | None:
         async with gate:
             try:
-                return one_line((await api.get_info(restaurant.id, topic)).summary) or None
+                return one_line((await api.get_info(restaurant.id, topic, language)).summary) or None
             except ApiError:
                 return None
 

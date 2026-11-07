@@ -10,6 +10,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from agent.api_client.models import RestaurantSettings
+from agent.gujarati import lines as gu_lines
+from agent.gujarati.lines import Gender
 from agent.speakable import speak_time
 
 _TEMPLATES = Path(__file__).parent
@@ -26,6 +28,12 @@ def _calendar_lines(restaurant: RestaurantSettings) -> str:
         lines.append(f"- {day.weekday} {day.date.isoformat()}{label}: {status}")
     return "\n".join(lines)
 
+
+# Gujarati verbs show the speaker's gender, so the prompt has to agree with the voice on the call.
+SELF_GENDER = {
+    "male": "You speak as a man: સમજી ગયો, જોઈ રહ્યો છું. Keep it the same all call.",
+    "female": "You speak as a woman: સમજી ગઈ, જોઈ રહી છું. Keep it the same all call.",
+}
 
 NO_FACTS_YET = "Not loaded yet."
 # The tools that look up what the facts would hold. Once the facts are in the prompt they're dropped,
@@ -46,6 +54,7 @@ def build_instructions(
     facts: str | None = None,
     lookups: Sequence[str] = LOOKUP_TOOLS,
     language: str = "en",
+    gender: Gender = "male",
     chat: bool = False,
 ) -> str:
     name = f"receptionist_chat_{language}.md" if chat else f"receptionist_{language}.md"
@@ -65,14 +74,17 @@ def build_instructions(
         phone_rule=phone_rule,
         lookup=_lookup_rule(lookups),
         facts=facts or NO_FACTS_YET,
+        self_gender=SELF_GENDER[gender],
     )
 
 
-def build_greeting(restaurant: RestaurantSettings) -> str:
+def build_greeting(restaurant: RestaurantSettings, language: str = "en") -> str:
     """Opening line: who we are, that this is an AI, how to reach staff, and the recording notice.
 
     As short as the required points allow: the caller waits through every word of it.
     """
+    if language == "gu":
+        return gu_lines.greeting(restaurant.name, restaurant.greeting, recording=restaurant.recording_enabled)
     parts = [
         restaurant.greeting,
         # Staff can't take calls in this test build, so the route to a person is a message.

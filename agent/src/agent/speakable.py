@@ -9,6 +9,8 @@ import re
 from collections.abc import AsyncIterable, AsyncIterator
 from datetime import date, datetime, time, timedelta
 
+from agent.gujarati.numbers import spoken_number_text
+
 
 def speak_time(t: datetime | time) -> str:
     """7:30 PM, 7 PM, 12 PM."""
@@ -69,7 +71,8 @@ def spoken_digits(text: str) -> str:
     """
     digits: list[str] = []
     repeat = 1
-    tokens = re.findall(r"\d+|[a-z]+", text.lower())
+    # Gujarati digits and number words first: "૯૮૭", "નવ આઠ સાત" and "ડબલ પાંચ" read like the rest.
+    tokens = re.findall(r"\d+|[a-z]+", spoken_number_text(text).lower())
     i = 0
     while i < len(tokens):
         token = tokens[i]
