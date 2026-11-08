@@ -1,316 +1,258 @@
-# Voice agent (`agent/`)
+# Survey caller (`agent/`)
 
 Owner: agent track (see [.github/CODEOWNERS](../.github/CODEOWNERS))
 
-The full write-up (architecture, latency numbers, eval results, hardest problems) comes in week 6. For now this page covers how to run the agent.
+The agent phones each number in a sheet, asks seven questions about the water supply in Gujarati, writes every answer into the sheet the moment it's given, thanks the person and hangs up. It's a LiveKit voice agent: Sarvam hears and speaks Gujarati, and an LLM (Groq, with Gemini behind it) reads each answer.
 
-## Setup
+```mermaid
+flowchart LR
+    sheet[(Sheet<br/>numbers)] --> dialer[dialer<br/>python -m agent.dialer run]
+    dialer -- one job per number --> lk[LiveKit Cloud]
+    lk --> agent[agent<br/>python -m agent.main]
+    agent -- SIP trunk --> phone((Person's phone))
+    agent -- each answer, live --> sheet
+```
 
-Prerequisites: [uv](https://docs.astral.sh/uv/) and the [LiveKit CLI](https://docs.livekit.io/home/cli/) (`winget install astral-sh.uv LiveKit.LiveKitCLI` on Windows).
+## The call
+
+After the person picks up and says "હેલો?", the agent introduces itself as an AI assistant and asks:
+
+| # | Question | Example answers | In the sheet |
+|---|---|---|---|
+| 1 | તમારું નામ શું છે? | મારું નામ રમેશભાઈ પટેલ | રમેશભાઈ પટેલ |
+| 2 | તમારું ગામ કયું છે? | ખાંભા | ખાંભા |
+| 3 | તાલુકો કયો છે? | ખાંભા જ | ખાંભા |
+| 4 | અને જિલ્લો કયો છે? | અમરેલી | અમરેલી |
+| 5 | તમારે ત્યાં પાણી આવે છે? | હા / ના | હા / ના |
+| 6 | પાણી કેટલા દિવસે આવે છે? | રોજ, એકાંતરે, ત્રણ દિવસે એક વાર | રોજ, એકાંતરે (દર 2 દિવસે) |
+| 7 | દિવસમાં કેટલો સમય પાણી આવે છે? | અડધો કલાક, સવારે છ થી આઠ | અડધો કલાક (30 મિનિટ) |
+
+If water doesn't come, questions 6 and 7 are skipped. A call goes like this:
+
+> **AI:** નમસ્તે! હું ગ્રામ પંચાયત તરફથી AI આસિસ્ટન્ટ બોલું છું. પાણીની સુવિધા વિશે બે મિનિટનો નાનો સર્વે છે. તમારું નામ શું છે?<br>
+> **Person:** મારું નામ રમેશભાઈ પટેલ.<br>
+> **AI:** આભાર, રમેશભાઈ પટેલ. તમારું ગામ કયું છે?<br>
+> **Person:** ખાંભા, તાલુકો ખાંભા ને જિલ્લો અમરેલી.<br>
+> **AI:** બરાબર, ખાંભા ગામ, ખાંભા તાલુકો અને અમરેલી જિલ્લો. હવે પાણી વિશે પૂછું. તમારે ત્યાં પાણી આવે છે?<br>
+> **Person:** હા, એકાંતરે આવે છે.<br>
+> **AI:** બરાબર, પાણી આવે છે અને એકાંતરે. દિવસમાં કેટલો સમય પાણી આવે છે?<br>
+> **Person:** માંડ અડધો કલાક.<br>
+> **AI:** અડધો કલાક, બરાબર. તમારી બધી માહિતી નોંધાઈ ગઈ છે. સમય આપવા બદલ ખૂબ ખૂબ આભાર. આવજો!
+
+What it handles:
+- **Several answers at once**, as above, and **corrections** ("ના, ગામ ખાંભા નહીં, ખંભાળિયા") at any point.
+- **Saying back** each name and place, so a misheard one gets corrected straight away.
+- **"શું?"** repeats the question. **"તમે કોણ બોલો છો?"** and **"આ શેના માટે?"** get an answer, then the question again.
+- **Unclear answers** get the question in other words. After three tries the survey moves on and the sheet says `(સ્પષ્ટ નથી)`, so a call never goes round in circles.
+- **"એક મિનિટ"** (hold on): it waits, and is three times as patient with the silence.
+- **"હું બિઝી છું, પછી ફોન કરજો"** ends politely as `busy`, to be called again. **Not interested** ends as `declined`.
+- **Silence**: "હેલો, તમને મારો અવાજ સંભળાય છે?", then goodbye if there's still nothing.
+- **A hang-up** keeps whatever was answered, as `partial`.
+
+## The sheet
+
+Put phone numbers in a column headed `Phone` (or `ફોન નંબર`, `Mobile`...). That's all the sheet needs: the first time it's read, the other columns are added after your own, which stay as they are. Numbers can be written any way: `98765 43210`, `+91-98765-43210`, `09876543210`. Ten digits are taken as Indian (`DEFAULT_COUNTRY_CODE`). [contacts.example.csv](../agent/contacts.example.csv) is an empty sheet with every column.
+
+| Column | Filled by | What it holds |
+|---|---|---|
+| Phone / ફોન નંબર | you | The number to call |
+| Name, Village, Taluka, District, Water comes?, How often, Time per day | agent | The answers, as each one is given |
+| Status | dialer, agent | Empty: not called yet. `calling` during the call, then `completed`, `partial`, `busy`, `no_answer`, `declined` or `failed` |
+| Attempts | dialer | Calls made to this number |
+| Last call | dialer, agent | When, in `SURVEY_TIMEZONE` |
+| Notes | agent | How it went: `Busy or rejected (486 Busy Here)`, `Call ended at the village question`, `Unclear: name` |
+| Call ID | agent | The call's id, as in the agent's log |
+| Transcript | agent | The whole conversation |
+
+`dialer run` calls every number with no status, and calls `busy`, `no_answer` and `failed` numbers again until they've had two attempts (`--max-attempts`). It never calls a `completed`, `partial` or `declined` number again; clear its Status to call it again.
+
+## Set up
+
+Everything runs from `agent/`. The first two steps need no accounts.
+
+### 1. Install and run the tests
 
 ```sh
 cd agent
-cp .env.example .env        # then fill in the keys in .env (never in .env.example)
-uv sync                     # installs Python 3.12 deps into agent/.venv
-uv run python -m agent.main download-files   # once: turn detector + VAD weights
-lk cloud auth               # once: links the lk CLI to your LiveKit Cloud project
+uv sync
+uv run pytest -q          # about 400 tests, a few seconds, no keys needed
+cp .env.example .env
+uv run python -m agent.main download-files    # once: the turn detector and VAD weights
 ```
 
-## Run
+### 2. Keys
 
-| Command | What it does | Needs |
+In `agent/.env`, set at least:
+
+| Key | Where | What for |
 |---|---|---|
-| `uv run python -m agent.main console` | Talk to the agent from your terminal with your mic and speakers. Fastest loop. | Deepgram, Gemini or Groq |
-| `lk agent dev src/agent/main.py` | Joins LiveKit Cloud with hot reload and prints an **Agent console** link where you can talk to it in the browser. | Also LiveKit (via `lk cloud auth`) |
+| `SARVAM_API_KEY` | [dashboard.sarvam.ai](https://dashboard.sarvam.ai) | Hearing and speaking Gujarati |
+| `GROQ_API_KEY` and/or `GOOGLE_API_KEY` | [console.groq.com](https://console.groq.com), [aistudio.google.com](https://aistudio.google.com) | Reading the answers |
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | [cloud.livekit.io](https://cloud.livekit.io), Settings → API keys | Phone calls |
 
-`lk agent dev` registers under a random dev deployment so your test traffic stays separate. The turn detector runs on LiveKit Cloud in this mode and falls back to a local model if the cloud one is unreachable.
+`uv run python scripts/check_providers.py` checks which Sarvam voices and STT options, and which LLMs, your keys can really use (it costs a few rupees of Sarvam credit).
 
-Switch the LLM without touching code: set `LLM_PROVIDER=groq` (default) or `gemini` in `.env`, and choose models with `GROQ_MODELS` (comma-separated, tried in order) and `GEMINI_MODEL`. `NOISE_CANCELLATION=off` turns off LiveKit's noise cancellation, for troubleshooting.
+### 3. Talk to it in the terminal
 
-## Text chats (Telegram)
-
-The same receptionist answers text chats. [agent/chat/](../agent/src/agent/chat/) runs it in a text-only session with the chat prompt ([receptionist_chat_en.md](../agent/src/agent/prompts/receptionist_chat_en.md)). The tools, booking rules, facts and Groq-to-Gemini fallback are the voice agent's own. Only the wording changes: booking codes and phone numbers are written out instead of spelled for the ear, and there are no "One moment." fillers, since the chat shows "typing…" instead.
-
-| Command | What it does |
-|---|---|
-| `uv run python -m agent.chat terminal` | Chat with the receptionist in your terminal; `/start` and `/menu` work too. Saves no call log. |
-| `uv run python -m agent.chat telegram` | Runs the Telegram bot. It long-polls Telegram, so it needs no public URL or tunnel. |
-
-To set up the bot:
-1. In Telegram, create it with @BotFather (`/newbot`), give it the commands `start`, `menu`, `mybookings` and `staff` (`/setcommands`), and turn off `/setjoingroups`.
-2. In `agent/.env`, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS` (comma-separated; @userinfobot shows yours). Anyone else gets a polite refusal that shows their user ID, so they can be added.
-3. `DATA_SOURCE` works as it does for calls. `TELEGRAM_RESTAURANT_PHONE` picks the restaurant, by its number in the API; it defaults to `DEFAULT_RESTAURANT_PHONE`.
-
-How a chat works:
-- **One conversation per guest, like a call.** Messages sent within `CHAT_QUIET_SECONDS` (1.5 s) of each other get one reply, and a message that arrives mid-reply waits its turn. After `CHAT_IDLE_MINUTES` (30) of quiet, or a goodbye, the chat is logged (`POST /api/agent/calls` with channel `telegram`), and the next message starts a new one with the greeting.
-- **Phone numbers:** a booking needs one. The bot shows a "Share my phone number" button, and a number shared that way is the guest's own (the bot checks the contact is theirs), so it's trusted like caller ID and never read back. A typed number is read back before booking, like a spoken one. The bot remembers shared numbers only while it runs.
-- **Commands:** `/menu` sends the whole menu straight from the data, with allergens as entered and "not listed" where they're missing, and no LLM request. `/mybookings` and `/staff` reach the agent as "What bookings do I have?" and "I'd like to leave a message for the staff."
-- **Voice notes:** transcribed by Deepgram (Nova-3, the call's `STT_LANGUAGE` and the restaurant's keyterms, on the same credit). The bot shows `I heard: "..."` so a misheard word is easy to correct, then answers as if it were typed. Notes over 30 seconds are turned away; without `DEEPGRAM_API_KEY`, voice notes get a text-only reply.
-- **Limits:** 20 messages per 10 minutes and 500 characters per message, per chat. Photos, stickers and files get a "text and voice notes only" reply. Chats share the free LLM budget with calls (see [Free-tier limits](#free-tier-limits)).
-- **One copy at a time:** Telegram refuses a second process polling the same bot (HTTP 409), so run the bot in one place only.
-- **The web API must accept channel `telegram`** (contract 1.1.0). Until it does, it refuses chat logs; the bot logs a warning and carries on.
-- **"Can't reach our booking system":** with `DATA_SOURCE=api`, the web app must be running at `API_BASE_URL` (`cd web && pnpm dev` for `http://localhost:3000`). The bot checks at startup and logs what to fix.
-
-## Telegram calls (testing)
-
-Telegram bots can't take calls, so for testing a Telegram *user* account can answer them with the voice agent. [agent/telegram_call/](../agent/src/agent/telegram_call/) logs the account in, and when someone on `TELEGRAM_ALLOWED_USER_IDS` calls it:
-1. It creates a LiveKit room and joins it as the caller ([bridge.py](../agent/src/agent/telegram_call/bridge.py)). LiveKit sends the agent there, as for any call.
-2. The phone keeps ringing until the agent is in the room (up to 45 s, for a cold start), then the call is answered.
-3. Audio flows both ways as 48 kHz mono, 10 ms frames, with no resampling. The agent greets once the call is connected, so the caller never misses the start of the greeting.
-4. When either side hangs up, the other side is hung up too. The call is logged like any other, with channel `telegram`.
-
-Calls from anyone else are left alone, to ring on the account's own devices. A call the bridge didn't answer is never hung up by it, even if it was answered on the phone.
-
-Setup:
-1. Use a **spare Telegram account** if you can: this drives a user account through Telegram's API, which Telegram may restrict.
-2. At [my.telegram.org](https://my.telegram.org), under API development tools, create an app. Put its `api_id` and `api_hash` in `agent/.env` as `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`. `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` must be set too.
-3. Run `uv run --group telegram-call python -m agent.telegram_call`. The first run asks for the account's phone number and the code Telegram sends, then keeps the login in `.telegram_call.session`. That file is the account's whole login: it's in `.gitignore`, so never share it.
-4. Make sure an agent is running: `uv run python -m agent.main dev` locally (it has the newest code), or the agent deployed to LiveKit Cloud. When both are up, LiveKit picks one. A deployed agent older than this feature greets before the call connects, so the caller misses the start of the greeting.
-
-Limits: one call at a time, allowed callers only, and the restaurant background hum isn't sent. Replies are a little slower than on a phone line, because the audio crosses Telegram as well as LiveKit. For real guests, use the phone number or WhatsApp Business calling.
-
-## Gujarati calls
-
-Set `AGENT_LANGUAGE=gu` and `SARVAM_API_KEY`, and calls run in Gujarati, with Gujarati-English mixing, on Sarvam Saaras and Bulbul. English stays the default and is unchanged. Start with [agent/docs/gujarati/README.md](../agent/docs/gujarati/README.md) for running and testing it, and [audit.md](../agent/docs/gujarati/audit.md) for what was found and the fine-tuning assessment.
-
-## Latency
-
-Every agent reply logs one line:
-
-```
-turn 4 latency | total 742 ms | eou 210 | stt 140 | llm ttft 420 (openai/gpt-oss-20b) | tts ttfb 95
-```
-
-- `total` is voice-to-voice: from the caller stopping speaking to the agent starting to speak. The target is p50 under 800 ms.
-- `eou` is end-of-turn detection, `stt` the final transcript, `llm ttft` the LLM's first token, `tts ttfb` the first audio.
-
-The log also shows each `caller:` and `agent:` line. When the caller cuts in, the agent's line is logged as `agent (INTERRUPTED, stopped after): ...` with only what was actually spoken. Barge-in needs at least two recognised words, so "no, wait" stops the agent but "mm-hmm", a cough or noise doesn't. If an interrupted line is followed by a `caller:` line repeating the agent's own words, the mic is picking up the speakers: use headphones.
-
-When the call ends, a summary line gives p50 and p95 for `total` and the median of each stage. To compare LLMs, make the same few calls with `LLM_PROVIDER=gemini` and then `groq`, and compare the summaries.
-
-[scripts/voice_benchmark.py](../agent/scripts/voice_benchmark.py) measures this over real audio. A scripted caller joins a LiveKit room, speaks five questions (a Deepgram voice, cached), and times the gap to the agent's first sound, while the agent's log gives the per-stage breakdown. Run the agent (and the web app), then `uv run python scripts/voice_benchmark.py`.
-
-### What makes replies fast
-
-- **One TTS piece per reply.** The whole reply goes to the TTS as one piece, and Deepgram starts on the first full sentence (first audio about 0.3 s after its last word). Until 29 Oct 2026, `Receptionist.llm_node` flushed after the first phrase to start a few words sooner, and the voice broke up in demo calls. LiveKit plays each flushed piece to the end before starting the next, and every Aura piece opens with 20–390 ms of silence, so replies paused mid-sentence and the intonation reset at the comma. A short first sentence, which the prompt asks for, keeps the start quick.
-- **Facts in the prompt instead of RAG.** The whole knowledge base (about 20 dishes and six info topics, ~500 tokens) is fetched once while the greeting plays ([facts.py](../agent/src/agent/facts.py)) and added to the prompt. Menu and info questions then take one LLM request and no API round trip. RAG would add a retrieval step for a corpus this small. Availability and bookings still go through tools, live.
-- **Early voice.** Preemptive generation starts the LLM, and the voice for its reply, before the caller's turn is confirmed.
-- **Two Groq models before Gemini.** Groq counts free limits per model, so `gpt-oss-120b` then `gpt-oss-20b` doubles the free budget; Gemini is the last resort.
-
-Measured with the benchmark on 24 Oct 2026, agent clock (caller stops → agent speaks), web app on Supabase in Tokyo:
-
-| Question | Before | After |
-|---|---|---|
-| Opening hours tomorrow | 3.4–7.6 s | 2.3–2.5 s |
-| Vegan dishes | 10.8 s | 1.3–1.4 s |
-| Parking | 13.5 s | 1.1–1.2 s |
-| Paneer tikka allergens | 14.9 s | 1.8–2.0 s |
-| Table on Tuesday (availability tool) | 22.8 s | 9.4–9.9 s |
-
-"Before" was dominated by the LLM: Groq had hit its free limits, so requests went to Gemini, which was taking 5–17 s. After the change, the slow case is the tool path: a ~1.4 s availability query to the database in Tokyo plus extra LLM requests, which on the free tier can hit Groq's per-minute limit. Callers hear about 1.3 s more than the agent clock because of network transit and audio buffering. These runs still split replies at the first phrase. They haven't been re-run since; the voice now also waits for the LLM to finish the first sentence.
-
-### Week 1 LLM measurements (24 Oct 2026, free tiers, text-only, same prompt)
-
-| Model | First token, turns 1 / 2 / 3 |
-|---|---|
-| Groq `openai/gpt-oss-20b` | 429 / 136 / 292 ms |
-| Gemini `gemini-3.5-flash-lite`, thinking minimal | 1190 / 973 / 1107 ms |
-| Gemini `gemini-3.8-flash`, thinking low | 18,257 ms (one turn) |
-
-Groq is the default primary because of this; the brief assumed Gemini. `gemini-3.8-flash` rejects thinking level `minimal`, `gemini-2.5-flash` is closed to new users, and Groq has retired `llama-3.1-8b-instant`. These are small samples from one evening; re-measure by voice before tuning further.
-
-## What the agent can do
-
-Tools in [tools.py](../agent/src/agent/tools.py):
-- **Info and menu:** hours, location, parking, delivery and specials; menu search with prices, spice, dietary tags and allergens. Missing allergen data is passed on as "not listed", never guessed.
-- **Availability:** checks a table; when the time is taken, it says so and offers the three nearest times.
-- **Bookings, changes and cancellations:** always two steps. A `prepare_*` tool checks the request and returns a read-back. `confirm_action` carries it out, but refuses to run in the same turn as the prepare, so the caller always gets to say yes first.
-- **Phone numbers:** when the phone line gives a caller ID, it's used and anything the LLM passes is ignored. Spoken numbers default to India (+91).
-- **Messages and hanging up:** `take_message` leaves a message for the manager (large parties, events, or a caller who wants a person); `end_call` hangs up after the goodbye.
-- **Days:** the LLM passes the day as the caller said it ("Tuesday", "tomorrow", "27th"), and `resolve_day` looks it up in the calendar the API sent at call start. Left to itself, the LLM sometimes turned "this Tuesday" into Sunday's date.
-- **Phone numbers by voice:** a text transform in front of TTS spaces out any run of 7 or more digits, so numbers are read digit by digit however the LLM wrote them. Numbers read in pairs ("ninety eight, seventy six...", common in India) are understood as well as digit by digit.
-- **Looking bookings up:** by the booking code, or by the line's own number (caller ID, or a number a chat guest shared from their own account). A number someone *says* never shows a booking. Anyone could say another guest's number, hear their bookings and codes, and cancel them. The exceptions are bookings made on the same call or chat.
-- **Limits checked in code:** a party of zero, a change past the phone party limit, an over-long name or note, and a message without a name or details get a question back instead of an API error.
-
-### Guardrails in code, not just the prompt
-
-The prompt asks the LLM not to invent anything, but a prompt is a request, not a guarantee. [guard.py](../agent/src/agent/guard.py) checks every sentence the LLM writes before the caller hears it (or the chat shows it). The first sentence that fails is replaced with a safe line, and the rest of that reply is dropped:
-
-| Check | Example it stops | Said instead |
-|---|---|---|
-| Claims a booking, change or cancellation that didn't happen on this call, or is still waiting for a yes | "Perfect, you're all set!" when the LLM skipped `confirm_action` | "Sorry, I haven't done that yet. Shall I go ahead?" |
-| A booking code no tool returned and the caller never said | "Your code is K, 7, Q, 9" | "Sorry, I don't have a booking code for that yet." |
-| A rupee price that's in neither the restaurant's data nor this conversation | "The lobster is 999 rupees" | "Sorry, I don't have that price." |
-
-The tools say the real confirmations and codes themselves, so a correct reply never trips these checks. The voice waits for a whole sentence before speaking anyway, so the check costs no time. A blocked sentence is logged as `reply guard: ...`.
-
-Prompt injection: the tools only do what the API allows, and the API checks who owns a booking. Restaurant data goes into the prompt as tidy single lines, so a menu entry can't forge a prompt section. And the prompt says nobody (not "the manager", not a "system update") can change the rules in a call or chat. Evals try each of these (below).
-
-### Hearing callers
-
-- **Longer pauses for details.** After the agent asks for a name, a day or time, or how many people, it waits 0.6 s of silence (up to 3 s while the turn detector thinks the caller is mid-thought) instead of 0.3 s. That stops "It's... Priyanka" being cut off after "It's". Phone numbers still get the longest wait (1 s, up to 4 s).
-- **When it can't make sense of what it heard, it asks again** rather than guessing. It speaks only English for now and says so.
-- **Recognition language** (`STT_LANGUAGE`). A comparison on 13 Indian-accented test clips (Gemini TTS, 2 Nov 2026; Nova-3 streaming with the restaurant's keyterms) scored the words that matter in each clip:
-
-  | Setting | Score | Notes |
-  |---|---|---|
-  | `en-US` (default) | 96% | Got Priyanka, Venkatesh, Jain, Swiggy; once dropped "table" |
-  | `en-IN` | 98% | Heard "Priyanka" as "pre" |
-  | `multi` | 78% | Understood Hindi mixed with English ("कल के लिए दो लोगों का table चाहिए"), but wrote "Venkatesh" in Telugu script and heard "Jain" as "Jan" |
-
-  `en-US` and `en-IN` are level within the noise of 13 clips, so the default stays `en-US`. Both English settings turned the Hinglish line into "Logo table", with 0.98 confidence. Confidence therefore can't flag garbled speech, which is why the prompt makes the agent ask again. `TTS_VOICE` picks the Aura-2 voice.
-
-### One id per conversation
-
-Every call gets a fresh id (`call_<32 hex>`, from `new_call_id()` in [tools.py](../agent/src/agent/tools.py)) when it starts. It's attached to:
-- every log line, next to the room name
-- every booking and message the call creates
-- the call log saved when the call ends ([call_log.py](../agent/src/agent/call_log.py)), which holds the transcript, outcome (booked, changed, cancelled, message_taken, answered or hung_up), latency per turn and channel
-
-So in the database each booking traces back to exactly one conversation (`reservations.call_id = calls.call_id`). Room names aren't used for this: console mode reuses one, and a test page can reuse a name it's given. Each call also runs in its own session with its own state, so two people calling at once can't see each other's pending booking or phone number; a unit test interleaves two such calls step by step.
-
-The prompt ([receptionist_en.md](../agent/src/agent/prompts/receptionist_en.md)) keeps the agent to restaurant topics and sets the speaking style. In browser calls, a quiet restaurant background makes it feel like a real front desk. There is no keyboard sound while the agent thinks: the background track plays 0.4 s behind (its buffer), so the typing landed on the first words of nearly every reply and the voice seemed to crackle. Console mode has no background audio.
-
-## Restaurant data
-
-`DATA_SOURCE=sample` (the default) uses a built-in fictional restaurant, The Saffron Table, with the same models, rules and error codes as the contract. Bookings and messages are saved in `agent/.sample_state.json`, so a booking made in one call can be changed in the next; delete the file to reset. Seeded data to test with:
-- Mondays are closed, and so is the day 10 days from today.
-- Next Saturday's dinner from 7 PM is full for parties of 3 or more.
-- Booking code `K7Q2` belongs to Asha Rao, for next Sunday at 1 PM.
-
-`DATA_SOURCE=api` calls the web tool API at `API_BASE_URL` with `AGENT_API_KEY` (see [Running with the web app](#running-with-the-web-app)). Without the web app, you can also point it at a mock of the contract (from the repo root):
+With `SURVEY_CSV=contacts.csv` in `.env` (the default) and headphones on:
 
 ```sh
-npx @stoplight/prism-cli mock contracts/openapi.yaml    # http://127.0.0.1:4010
-```
-
-The models in [api_client/models.py](../agent/src/agent/api_client/models.py) are generated from the contract. After a contract change, regenerate them from `agent/`:
-
-```sh
-uv run datamodel-codegen --input ../contracts/openapi.yaml --input-file-type openapi \
-  --output src/agent/api_client/models.py --output-model-type pydantic_v2.BaseModel \
-  --target-python-version 3.12 --use-standard-collections --use-union-operator --field-constraints \
-  --collapse-root-models --use-schema-description --use-field-description --disable-timestamp \
-  --custom-file-header "# Generated from contracts/openapi.yaml by datamodel-codegen. Do not edit; regenerate (see docs/agent.md)."
-uv run ruff format src/agent/api_client/models.py
-```
-
-## Running with the web app
-
-The agent and [web/](web.md) meet only over HTTP. The web app's data lives in Supabase (project region ap-northeast-1, Tokyo).
-
-```sh
-# web/.env.local: the same AGENT_API_KEY as agent/.env, and DATABASE_URL set to Supabase's
-# *session pooler* (Project → Connect → Session pooler), e.g.
-#   postgresql://postgres.<project-ref>:<password>@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres
-# The direct db.<project-ref>.supabase.co host is IPv6-only and fails on most home networks.
-# URL-encode special characters in the password (@ becomes %40).
-cd web
-pnpm install
-pnpm dev                       # http://localhost:3000, also the staff dashboard
-
-# agent/.env: DATA_SOURCE=api and API_BASE_URL=http://localhost:3000, then talk to it
-cd ../agent
 uv run python -m agent.main console
 ```
 
-To work offline instead, run Postgres in Docker and point `DATABASE_URL` at it:
+You get the whole survey through your microphone, and a new row in `contacts.csv` with your answers. Do this before the first real call: it tries the voice, the hearing, the LLM and the sheet together.
+
+### 4. The sheet
+
+**Google Sheets** (for the demo: the answers appear as people speak). The agent signs in as a *service account*, a robot Google account:
+
+1. In the [Google Cloud console](https://console.cloud.google.com), create a project (or use one), then under APIs & Services → Library, enable the **Google Sheets API**.
+2. Under APIs & Services → Credentials, choose Create credentials → **Service account**. Give it a name, then Done.
+3. Open the service account, then Keys → Add key → Create new key → **JSON**. Save the file as `agent/service-account.json` (git and the Docker image both ignore it). It's a password: never send it around.
+4. Open your sheet in Google Sheets and **Share** it with the service account's email (`client_email` in the file, `...@....iam.gserviceaccount.com`) as an **Editor**.
+5. In `.env`, set `GOOGLE_SHEET_ID` to the sheet's address (or just its id). `GOOGLE_SHEET_TAB` picks a tab; empty means the first.
+
+**A CSV file** works too, with `GOOGLE_SHEET_ID` empty and `SURVEY_CSV=contacts.csv`. It's saved so Excel shows Gujarati, but close it in Excel during calls (Excel locks it). A CSV only works while the agent runs on the same computer (`agent.main dev`), not deployed.
+
+### 5. The phone line
+
+Outbound calls go through a **SIP trunk**: a phone line from a telephony provider that can call the numbers you want (for India, an Indian provider such as Exotel or Plivo, or any SIP provider that can reach Indian mobiles). The provider gives you a SIP address, a phone number and usually a username and password. Then, once:
 
 ```sh
-docker run -d --name resassistant-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=resassistant -p 5433:5432 postgres:17
-# DATABASE_URL=postgres://postgres:postgres@localhost:5433/resassistant, then from web/:
-pnpm drizzle-kit push --force
-docker exec -i resassistant-pg psql -U postgres -d resassistant < db/migrations/0000_reservations_exclusion.sql
-pnpm db:seed && git checkout -- db/seed-data.json   # the seed script rewrites this tracked file
+uv run python -m agent.dialer setup-trunk --address <sip address> --number <+91...> --username <user> --password <password>
 ```
 
-Bookings, messages and call logs the agent makes show up in the dashboard at http://localhost:3000.
+It prints `SIP_OUTBOUND_TRUNK_ID=ST_...`: put that line in `.env`.
 
-[integration/](../agent/integration/) checks every contract endpoint against the running web app through the agent's own HTTP client. It parses each response with the contract models and covers availability rules, double-booking, ownership, idempotency, and a booking's whole life across routes. It writes fictional "Integration Test" bookings and cancels them. Start the web app, then from `agent/`:
+### 6. Check
 
 ```sh
-uv run pytest integration -v
+uv run python -m agent.dialer check
 ```
 
-[scripts/add_dummy_data.py](../agent/scripts/add_dummy_data.py) fills the web app with fictional test data through the same API: bookings across the coming week, next Saturday 7 PM full for parties of 3 or more, three manager messages, and call logs linked to their bookings by call id. Everything is marked "Dummy data" with 555-01xx numbers. `--remove` cancels the dummy bookings again.
+It checks the keys, LiveKit, the phone line and the sheet, and says what to fix.
 
-### Response times with Supabase
+## Run the survey
 
-Measured on 24 Oct 2026 from Bangalore, web app running locally, database in Tokyo (about 130 ms per round trip):
+In one terminal, start the agent. It waits for calls:
 
-| API call | Time | When the agent makes it |
+```sh
+uv run python -m agent.main dev
+```
+
+In another, call yourself first, then everyone:
+
+```sh
+uv run python -m agent.dialer call +919876543210   # adds the number to the sheet and calls it
+uv run python -m agent.dialer run                  # everyone not called yet, one after another
+uv run python -m agent.dialer run --limit 5        # only the next five
+uv run python -m agent.dialer run --dry-run        # only show who would be called
+uv run python -m agent.dialer list                 # the sheet, from the terminal
+```
+
+Calls go out one at a time, with a few seconds between them. Each waits for the previous one to end, which suits the free tiers. The dialer only calls between 9 AM and 9 PM (`SURVEY_CALL_HOURS`); add `--any-time` to call outside those hours, for example your own phone. Stopping the dialer (Ctrl+C) lets a call in progress finish.
+
+### Demo checklist
+
+1. `dialer check` shows no FAIL.
+2. A console call (`agent.main console`) the same day: the voice, the hearing and the sheet all work.
+3. The agent running (`agent.main dev`) or deployed, before the dialer starts.
+4. `dialer call` to your own phone, with the Google Sheet open on screen: each answer appears in its row as you say it.
+5. Then `dialer run` on the demo list: people who agreed to be called.
+
+## Deploy to LiveKit Cloud
+
+So the agent takes calls without your computer. LiveKit builds the image from [Dockerfile](../agent/Dockerfile). Put the settings in `agent/.env.production`, which git and the upload both ignore. That means everything from `.env` except the three `LIVEKIT_` values, which LiveKit sets itself. The service account key goes in as text: `GOOGLE_SERVICE_ACCOUNT_JSON` holds the key file's contents (or their base64), since a deployed agent has no file to read.
+
+```sh
+lk cloud auth                                                          # once
+lk agent deploy                                                        # this repo's livekit.toml names the agent
+lk agent update-secrets --secrets-file .env.production --overwrite     # after changing a setting
+lk agent logs
+```
+
+A deployed agent needs the Google Sheet: it can't see a CSV on your computer. The dialer still runs on your computer, with the same `AGENT_NAME`. On the free plan an idle agent sleeps, and the first call waits 10–20 s for it to wake. The dialer allows for that.
+
+## How it works
+
+| File | What it does |
+|---|---|
+| [survey/script.py](../agent/src/agent/survey/script.py) | Every question and fixed line, in Gujarati |
+| [survey/flow.py](../agent/src/agent/survey/flow.py) | Where the call is: takes what was understood and picks the next line |
+| [survey/reader.py](../agent/src/agent/survey/reader.py) | Reads a turn: rules for plain answers, the LLM for the rest, rules again if the LLM fails |
+| [survey/answers.py](../agent/src/agent/survey/answers.py) | Cleaning and checking answers; days and hours in Gujarati; how the sheet shows them |
+| [survey/agent.py](../agent/src/agent/survey/agent.py) | The LiveKit agent: one reading per turn, one line back |
+| [survey/controls.py](../agent/src/agent/survey/controls.py) | Silence, lost words, the time limit, hanging up |
+| [survey/recorder.py](../agent/src/agent/survey/recorder.py) | Writes answers into the row in the background, during the call |
+| [sheets/](../agent/src/agent/sheets/) | Google Sheets and CSV: header detection, cells in, contacts out |
+| [main.py](../agent/src/agent/main.py) | One call: dial, wait for "હેલો?", run the survey, save the result |
+| [dialer.py](../agent/src/agent/dialer.py) | Reads the sheet and sends the agent to each number |
+| [outbound.py](../agent/src/agent/outbound.py) | The call request, the SIP dial, and what a failed dial means |
+| [languages.py](../agent/src/agent/languages.py) | Sarvam hearing and voice, the turn detector |
+| [gujarati/](../agent/src/agent/gujarati/) | Gujarati numbers and times, text for the voice, the style linter |
+
+**The LLM never decides what to say.** On each turn the reader asks it one small question, "what did the person answer?", and it must reply with a function call (`record_answer`), never with words. The flow then picks the next line from the script. So the call can't drift off-topic, invent a question, or forget where it was after an answer it didn't expect. Short answers the rules understand completely ("હા", "રોજ", "અડધો કલાક") skip the LLM altogether: about a second sooner, and one request fewer against the free tier. When the LLM fails or is slow (5 s), the rules read the answer instead, so the call carries on.
+
+**The sheet fills in live.** Each answer is written to its row in the background while the call goes on, and a final write at the end holds every answer, the status and the transcript. A failed write is logged and retried with the next, and never interrupts the call.
+
+### The problem after the name, and what fixed it
+
+On the old receptionist, things went wrong after it asked for the name. Three causes, each fixed:
+
+1. **The LLM chose the next step.** It had to call the right tool again with the name. When it replied in words instead, the name was lost and the call lost its place. Now the flow decides every step, and the LLM only reads answers.
+2. **Short answers could vanish.** A name is often one short word. Sarvam's streaming STT finds speech with its own detector, and a short word sometimes came back with no transcript at all. LiveKit only ends a turn once words arrive, so the agent sat silent until the silence check-in. Now speech that brings no words gets the question again after 3 s (`TRANSCRIPTION_TIMEOUT_SECONDS`), at most twice in a row.
+3. **Long waits after a bare answer.** The turn detector doesn't know Gujarati, and when unsure it waited up to 3 s after "રમેશ". The wait is now capped at 2 s, with a 0.7 s floor so "મારું નામ… રમેશ" isn't cut after "નામ". If it is, the next turn is read together with it.
+
+`SARVAM_STT_FLUSH=on` goes further: LiveKit asks Sarvam for the words the moment a turn ends, instead of waiting for Sarvam's own end-of-speech detection. It uses Sarvam's documented flush signal but hasn't been tried on live calls yet, so it's off by default. Try it on a test call; if replies come sooner and nothing is lost, keep it.
+
+## Settings
+
+All in [.env.example](../agent/.env.example), each explained in place. The ones to know:
+
+| Setting | Default | What it does |
 |---|---|---|
-| Restaurant settings | ~0.9 s | once, at call start |
-| Info, menu | ~0.6 s | a general or menu question |
-| Availability | ~1.4 s | checking a table |
-| Create booking | ~3.1 s | after the caller says yes |
-| Change booking | ~2.8 s | after the caller says yes |
-| Cancel | ~1.2 s | after the caller says yes |
-
-The time is mostly the web API making several database queries one after another, each paying the Tokyo round trip. The agent reuses an availability check from the last 90 seconds instead of repeating it when the caller books, and keyboard sounds play while a tool runs. The big wins are on the web side: a Supabase project in ap-south-1 (Mumbai), queries run in parallel or cached, and booking without re-running the full availability search.
-
-## Deploying to LiveKit Cloud
-
-The agent runs on LiveKit Cloud's free Build plan:
-- one deployment
-- 5 calls at once
-- 1,000 agent minutes a month. This is a hard cap: once it's used up, new calls fail and nothing is charged.
-
-LiveKit builds the image itself from `agent/` with the [Dockerfile](../agent/Dockerfile). The upload leaves out `.env*` files, anything in `.gitignore`, and anything in [.dockerignore](../agent/.dockerignore).
-
-**Region: `us-east` (Ashburn).** The region can't be changed after the agent is created. Every turn calls Deepgram (STT and TTS) and Groq, which are served from the US, so the agent sits next to them. Only the caller's audio crosses the ocean, once each way. In `ap-south` (Mumbai), each turn would pay the India–US round trip three times: for the transcript, the LLM's first token and the first audio.
-
-**Restaurant data:** `DATA_SOURCE=sample` is the fastest choice for a public demo. Tool calls stay inside the agent, with no API or database round trip. Bookings last until the agent restarts or is redeployed.
-
-**Secrets:** LiveKit sets `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` itself and won't accept them as secrets. Put everything else in `agent/.env.production`, which git and the build upload both ignore:
-- the Deepgram, Groq and Google keys, and `SARVAM_API_KEY` with the `SARVAM_*` settings for Gujarati calls
-- `LLM_PROVIDER`, `GROQ_MODELS`, `GEMINI_MODEL` and `GEMINI_THINKING_LEVEL`
-- `MAX_CALL_SECONDS` and `SILENCE_CHECK_IN_SECONDS`
-- `DATA_SOURCE=sample`, or `DATA_SOURCE=api` with `API_BASE_URL` set to the web app's production URL and `AGENT_API_KEY`
-
-```sh
-cd agent
-docker build -t resassistant-agent .                                 # optional: check the image builds
-lk agent create --region us-east --secrets-file .env.production      # once: writes livekit.toml, builds, deploys
-lk agent deploy                                                      # after each change
-lk agent update-secrets --secrets-file .env.production --overwrite   # after changing a secret (restarts the agent)
-lk agent logs                                                        # the same latency lines as locally
-```
-
-Commit `livekit.toml`. It holds only the project subdomain and the agent id.
-
-**Cold starts:** on the Build plan, LiveKit scales the agent to zero once no call is running. The next call then waits 10–20 s before the agent joins the room. The image already contains compiled bytecode and the model weights, which keeps that wait short. A browser demo page should keep ringing for at least 40 s before it gives up. Paid plans keep the agent warm.
-
-## Free-tier limits
-
-Groq's free tier allows **8,000 tokens per minute and 200,000 tokens per day per model**, and every request resends the prompt, facts and tool list (about 2,500 tokens). That is roughly three requests a minute and 80 a day per model, about 10–15 short calls. A day of heavy testing uses it up, and then every request goes to Gemini, which is much slower. For dependable sub-2-second replies, Groq's pay-as-you-go tier lifts these limits (see Groq's pricing page; short calls use a few thousand tokens). What keeps calls inside the free limits:
-- **Fallback:** when both `GROQ_API_KEY` and `GOOGLE_API_KEY` are set, a Groq rate limit hands the request to Gemini immediately instead of failing the turn. Two Gemini quirks are handled in [main.py](../agent/src/agent/main.py): tool calls Groq made get Google's documented stand-in thought signature, and each attempt gets 10 s, because Google rejects request deadlines under 10 s.
-- **Small requests:** a short prompt, an 8-day calendar, terse tool descriptions, short replies (under about 30 words), and at most one speculative (preemptive) LLM request per turn. A 600-token cap is only a runaway guard: reasoning tokens count against it, so a tighter cap cuts spoken answers off mid-sentence.
-- **Calls end on their own** ([call_limits.py](../agent/src/agent/call_limits.py)): after `SILENCE_CHECK_IN_SECONDS` of silence the agent asks "Are you still there?", and hangs up if the caller stays silent; no call runs past `MAX_CALL_SECONDS`. These lines are fixed text and cost no LLM requests.
-- **Usage log:** at the end of each call, a usage line shows the tokens each model used.
+| `SURVEY_ORG_NAME` | empty | Who the call is from, said in the introduction: `ગ્રામ પંચાયત` |
+| `SURVEY_PURPOSE` | about collecting water information | The answer to "why are you asking?" |
+| `SURVEY_CALL_HOURS` | `9-21` | When the dialer may call |
+| `MAX_CALL_SECONDS` | 240 | Longest call |
+| `SILENCE_CHECK_IN_SECONDS` | 8 | Silence before "હેલો, ... સંભળાય છે?", and again before hanging up |
+| `ENDPOINTING_MIN_DELAY`, `ENDPOINTING_MAX_DELAY` | 0.7, 2.0 | How long a pause ends an answer |
+| `TRANSCRIPTION_TIMEOUT_SECONDS` | 3 | Speech with no words: ask again after this long |
+| `SARVAM_TTS_SPEAKER`, `SARVAM_TTS_PACE` | `shubh`, 1.0 | The voice, and how fast it speaks (0.9 for older people) |
+| `LLM_PROVIDER`, `GROQ_MODELS` | `groq`, gpt-oss-120b then 20b | Which LLM reads answers first |
 
 ## Checks
 
 ```sh
-uv run ruff format . && uv run ruff check . && uv run pytest -q
+uv run ruff format . && uv run ruff check . && uv run pytest -q    # what CI runs; no keys needed
+uv run pytest evals -v                                             # the real LLM reading real answers
 ```
 
-CI runs the same three on every PR that touches `agent/` or `contracts/`. They need no API keys.
+[tests/](../agent/tests/) cover the flow, the reader, the rules, both sheets, the dialer and the call controls. [test_session.py](../agent/tests/test_session.py) runs whole surveys through LiveKit's own `AgentSession` with a scripted LLM, including the after-the-name cases and a failed LLM.
 
-## Conversation tests (evals)
+[evals/test_reading.py](../agent/evals/test_reading.py) gives the real LLM 24 answers as people really say them: names, places, corrections, numbers of days and hours, "hold on", busy, and "yes" to "can you hear me?". It uses one request per case, so it isn't in CI. Run it after changing the reader's instructions or the model, and compare models with `GROQ_MODELS=openai/gpt-oss-20b uv run pytest evals -v` or `LLM_PROVIDER=gemini`.
 
-[evals/](../agent/evals/) holds scenarios run with the real LLM against the sample data:
-- off-topic and "ignore your rules" requests
-- missing allergen data
-- a closed day, a full slot, and a party too large
-- the full booking flow
-- hanging up
-- adversarial callers: a "manager" lifting the party limit, asking for the system prompt, a dish that isn't on the menu, a demanded discount, someone else's booking by phone number, garbled speech ("Logo table") and Hindi
-- text chats ([test_chat.py](../agent/evals/test_chat.py)): booking with a shared or a typed number, scope, allergens, plain-text answers, goodbye, a message posing as a system update, and someone else's booking by typed number
+## Latency
 
-Each test checks which tools were called, and Gemini judges the reply. Evals use API quota (about 25 requests for the voice set and 15 for the chat set), so they don't run in CI. Run them from `agent/`:
+Every reply logs a line like `turn 4 latency | total 1320 ms | eou 610 | stt 480 | llm ttft 700 ...`, and each turn of the survey logs what was understood: `survey | +9198xxxxx210 | asked village | answer (llm) {'village': 'ખાંભા'}`. At the end of the call, a summary gives the p50 and p95. Replies the rules read have no LLM time at all.
 
-```sh
-uv run pytest evals -v
-uv run pytest evals/test_chat.py -v    # only the chat scenarios
-```
+## If something goes wrong
+
+| What you see | What to do |
+|---|---|
+| `dialer check` says FAIL | Do what it says, then run it again |
+| `No agent took the call` in Notes | Start `uv run python -m agent.main dev` (or deploy), with the same `AGENT_NAME` as the dialer |
+| Every call `failed` with a SIP 401/403 | The trunk's username or password is wrong: run `setup-trunk` again with the provider's details |
+| Calls `no_answer` at once | The provider can't reach that number, or the number is off. Try your own number first |
+| `Can't open the Google Sheet` | Share the sheet with the service account's email as an Editor, and check `GOOGLE_SHEET_ID` |
+| `Can't write contacts.csv: close it in Excel` | Close the file in Excel during calls, or use a Google Sheet |
+| The agent hears itself in console mode | Use headphones |
+| The agent asks again after every short answer | The STT is losing short words: try `SARVAM_STT_FLUSH=on`, or `STT_PROVIDER=sarvam-realtime` if your Sarvam plan has it |
+| Replies get slow after many calls | The free Groq budget ran out and requests moved to Gemini. Wait, or use Groq's paid tier |
+
+## Calling people responsibly
+
+- **Only call people who agreed to be called.** The agent says it's an AI in its first sentence and whenever asked, and never claims to be a person. Keep it that way.
+- India's TRAI rules treat AI calls as automated calls. Before calling the public (not a demo with people who agreed), get a view on consent, DND and calling hours, and use a phone line registered for it.
+- The sheet holds names, villages and transcripts, which are personal data under India's DPDP Act. Share it only with those who need it, and delete what you no longer need.
+- **Free LLM tiers may use what you send them for training.** The reader sends each answer to Groq or Gemini, so for real people's data use a paid tier with suitable data terms.

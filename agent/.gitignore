@@ -19,12 +19,11 @@ htmlcov/
 .cache/
 evals/results/
 
-# Voices of real people, recorded for the STT benchmark: never commit these
-data/gujarati/recordings/
+# The people called and their answers: real phone numbers, never commit them. The example is fake.
+*.csv
+*.csv.lock
+!contacts.example.csv
 
-# Sample-data bookings saved between test calls
-.sample_state.json
-
-# Telegram logins (agent/telegram_call): each one is a whole account's login
-*.session
-*.session-journal
+# Google service account keys: a key is a login to every sheet shared with it
+service-account*.json
+*-service-account*.json

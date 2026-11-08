@@ -1,8 +1,8 @@
 """What makes a Gujarati reply sound written, not spoken: a linter for agent lines.
 
 Checks wording only. It can catch bookish words and a wrong pronoun; it can't hear whether a line
-sounds natural. That takes a native speaker (docs/gujarati/README.md). The dataset build, the eval
-suite and the LLM comparison all use it, so the same rules are held everywhere.
+sounds natural. That takes a native speaker. tests/test_script.py runs every fixed line of the survey
+through it, so a stiff or wrongly gendered line fails CI before anyone hears it.
 """
 
 from __future__ import annotations

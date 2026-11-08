@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterable, AsyncIterator, Callable
+from typing import Literal
 
-from agent.gujarati.lines import Gender
 from agent.gujarati.numbers import clock_words, day_part, number_words, to_ascii_digits
+
+Gender = Literal["male", "female"]
 
 _DIGIT_WORDS = ["શૂન્ય", "એક", "બે", "ત્રણ", "ચાર", "પાંચ", "છ", "સાત", "આઠ", "નવ"]
 
@@ -25,7 +27,6 @@ LEXICON = {
     "ok": "ઓકે",
     "okay": "ઓકે",
     "ai": "એઆઈ",
-    "the saffron table": "ધ સેફ્રોન ટેબલ",
 }
 _LEXICON = re.compile(
     r"(?<![A-Za-z])("
@@ -120,3 +121,34 @@ def speak_gujarati(gender: Gender) -> Callable[[AsyncIterable[str]], AsyncIterat
             yield for_the_ear(buffer, gender)
 
     return transform
+
+
+# Typography the LLM likes ("six PM", "multi-level" with special hyphens, curly quotes) that can make a
+# voice pause oddly or skip a word: narrow and non-breaking spaces, special hyphens, curly quotes.
+_PLAIN = str.maketrans(
+    {
+        "\u202f": " ",
+        "\u00a0": " ",
+        "\u2009": " ",
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2026": "...",
+    }
+)
+# An aside becomes a comma pause. Runs after for_the_ear, which has already said "6–8" as "છ થી આઠ".
+_DASH = re.compile(r"\s*[–—]\s*")
+
+
+def plain_punctuation(text: str) -> str:
+    return _DASH.sub(", ", text).translate(_PLAIN)
+
+
+async def speak_plain_punctuation(chunks: AsyncIterable[str]) -> AsyncIterator[str]:
+    """TTS text transform: plain_punctuation on each streamed chunk (characters never split)."""
+    async for chunk in chunks:
+        yield plain_punctuation(chunk)

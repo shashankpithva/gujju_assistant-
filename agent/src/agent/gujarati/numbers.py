@@ -1,13 +1,14 @@
-"""Numbers, times, dates, phone numbers and booking codes the way Gujarati speakers say them.
+"""Numbers and times the way Gujarati speakers say them, in both directions.
 
-A Gujarati caller says "સાંજે સાડા સાત વાગ્યે", not "7:30 PM", and every number from 1 to 99 is a word
-of its own. Spelling these out here means the voice can't read a time or a price in English.
+A caller says "બે કલાક" or "સાડા સાત વાગ્યે", not "2 hours" or "7:30", and every number from 1 to 99
+is a word of its own. The survey reads these back for the voice (speech.py) and out of the caller's
+answers (survey/answers.py), so neither depends on the LLM getting a number right.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time
 
 # 0 to 99. Spellings vary between writers, so VARIANTS below also lists the common alternatives.
 _WORDS = [
@@ -201,38 +202,6 @@ def spoken_number_text(text: str) -> str:
     return _TOKEN.sub(swap, text)
 
 
-# "સાડા ત્રણસો" is three and a half hundreds: the word adds a part of the unit, it doesn't multiply.
-_FRACTIONS = {"સવા": 0.25, "સાડા": 0.5, "પોણા": -0.25}
-
-
-def amounts_in(text: str) -> set[int]:
-    """Rupee amounts said in Gujarati words: "ત્રણસો એંસી રૂપિયા", "સાડા ત્રણસો રૂપિયા", "બારસો રૂપિયા"."""
-    tokens = _TOKEN.findall(to_ascii_digits(text))
-    amounts = set()
-    for i, token in enumerate(tokens):
-        # Not just "રૂ...": "બે રૂમ" is two rooms.
-        if not (token.startswith("રૂપિય") or token in ("રૂ", "rs", "rupee", "rupees")):
-            continue
-        total, start = 0, i
-        while start > 0:
-            word = tokens[start - 1]
-            if word == "હજાર":
-                unit = value_of(tokens[start - 2]) if start >= 2 else None
-                total += (unit or 1) * 1000
-                start -= 2 if unit is not None else 1
-            elif (value := value_of(word)) is not None:
-                total += value
-                start -= 1
-            else:
-                break
-        if total >= 100 and start > 0 and tokens[start - 1] in _FRACTIONS:
-            unit = 1000 if total >= 1000 else 100
-            total += round(unit * _FRACTIONS[tokens[start - 1]])
-        if total:
-            amounts.add(total)
-    return amounts
-
-
 # Times ---------------------------------------------------------------------------------------
 
 
@@ -264,113 +233,3 @@ def clock_words(hour: int, minute: int) -> str:
 def speak_time(t: datetime | time) -> str:
     """19:30 -> સાંજે સાડા સાત વાગ્યે."""
     return f"{day_part(t.hour)} {clock_words(t.hour, t.minute)} વાગ્યે"
-
-
-def join_or(items: list[str]) -> str:
-    """a; a કે b; a, b કે c."""
-    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} કે {items[-1]}"
-
-
-def join_times(times: list[datetime]) -> str:
-    """Alternatives said the short way when they share a part of the day: રાત્રે આઠ, સવા આઠ કે નવ વાગ્યે."""
-    parts = {day_part(t.hour) for t in times}
-    if len(parts) == 1:
-        return f"{parts.pop()} {join_or([clock_words(t.hour, t.minute) for t in times])} વાગ્યે"
-    return join_or([speak_time(t) for t in times])
-
-
-# Days ----------------------------------------------------------------------------------------
-
-_WEEKDAYS = ("સોમવાર", "મંગળવાર", "બુધવાર", "ગુરુવાર", "શુક્રવાર", "શનિવાર", "રવિવાર")
-MONTHS = (
-    "જાન્યુઆરી", "ફેબ્રુઆરી", "માર્ચ", "એપ્રિલ", "મે", "જૂન", "જુલાઈ", "ઑગસ્ટ", "સપ્ટેમ્બર", "ઑક્ટોબર",
-    "નવેમ્બર", "ડિસેમ્બર",
-)  # fmt: skip
-
-
-def _on(word: str) -> str:
-    """ "on": a vowel sign after a consonant (ડિસેમ્બરે), a whole vowel after a vowel (જાન્યુઆરીએ, મેએ)."""
-    return f"{word}એ" if word[-1] in "ીઈે" else f"{word}ે"
-
-
-def speak_day(d: date, today: date) -> str:
-    """આજે, આવતીકાલે, શનિવારે, or શુક્રવારે, પચ્ચીસ ડિસેમ્બરે more than two weeks out."""
-    if d == today:
-        return "આજે"
-    if d == today + timedelta(days=1):
-        return "આવતીકાલે"
-    weekday = _on(_WEEKDAYS[d.weekday()])
-    if d - today < timedelta(days=7):
-        return weekday
-    if d - today < timedelta(days=14):
-        return f"{weekday}, {_WORDS[d.day]} તારીખે"
-    return f"{weekday}, {_WORDS[d.day]} {_on(MONTHS[d.month - 1])}"
-
-
-# Phone numbers and booking codes ---------------------------------------------------------------
-
-
-def speak_digits(digits: str) -> str:
-    """Digits one by one in groups of three, like speakable.speak_digits: એક બે ત્રણ, ચાર પાંચ છ."""
-    groups = [digits[i : i + 3] for i in range(0, len(digits), 3)]
-    return ", ".join(" ".join(_WORDS[int(d)] for d in group) for group in groups)
-
-
-def speak_phone(e164: str) -> str:
-    """+919876543210 -> નવ આઠ સાત છ પાંચ, ચાર ત્રણ બે એક શૂન્ય."""
-    digits = e164.lstrip("+")
-    if digits.startswith("91") and len(digits) == 12:
-        groups = [digits[2:7], digits[7:]]
-    else:
-        groups = [digits[i : i + 3] for i in range(0, len(digits), 3)]
-    return ", ".join(" ".join(_WORDS[int(d)] for d in group) for group in groups)
-
-
-# How letters are said in Gujarati. Written out, so the voice reads each one and never tries a word.
-_LETTERS = {
-    "A": "એ", "B": "બી", "C": "સી", "D": "ડી", "E": "ઈ", "F": "એફ", "G": "જી", "H": "એચ", "I": "આઈ",
-    "J": "જે", "K": "કે", "L": "એલ", "M": "એમ", "N": "એન", "O": "ઓ", "P": "પી", "Q": "ક્યૂ", "R": "આર",
-    "S": "એસ", "T": "ટી", "U": "યૂ", "V": "વી", "W": "ડબલ્યૂ", "X": "એક્સ", "Y": "વાય", "Z": "ઝેડ",
-}  # fmt: skip
-_LETTER_OF = {spoken: letter for letter, spoken in _LETTERS.items()} | {"ક્યુ": "Q", "યુ": "U", "ડબલ્યુ": "W"}
-
-
-def spell_code(code: str) -> str:
-    """K7Q2 -> કે, સાત, ક્યૂ, બે."""
-    return ", ".join(_WORDS[int(c)] if c.isdigit() else _LETTERS.get(c, c) for c in code.upper())
-
-
-def _code_symbol(token: str) -> str | None:
-    if (letter := _LETTER_OF.get(token)) is not None:
-        return letter
-    if (value := _VALUE.get(token)) is not None and value < 10:
-        return str(value)
-    return token.upper() if re.fullmatch(r"[A-Za-z0-9]", token) else None
-
-
-def code_from_speech(text: str) -> str:
-    """The reverse of spell_code: "કે, સાત, ક્યૂ, બે" -> "K 7 Q 2", leaving other text alone.
-
-    A code is read with a comma after every symbol, and that's what tells it from ordinary speech:
-    "કે" and "એ" are everyday words, so "સાત, આઠ કે નવ વાગ્યે" (seven, eight or nine o'clock) holds
-    four symbols in a row but is no code. Only a word that stands alone between commas joins a run;
-    a longer piece can end a run with its first word and start one with its last.
-    """
-    best: list[str] = []
-    run: list[str] = []
-    for piece in to_ascii_digits(text).split(","):
-        tokens = _TOKEN.findall(piece)
-        if not tokens:
-            best, run = max(best, run, key=len), []
-            continue
-        first = _code_symbol(tokens[0])
-        if len(tokens) == 1 and first:
-            run.append(first)
-            continue
-        if first and run:
-            run.append(first)
-        best = max(best, run, key=len)
-        last = _code_symbol(tokens[-1])
-        run = [last] if last else []
-    best = max(best, run, key=len)
-    return " ".join(best) if len(best) >= 4 and any(s.isalpha() for s in best) else text

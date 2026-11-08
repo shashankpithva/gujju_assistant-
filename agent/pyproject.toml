@@ -1,9 +1,10 @@
 [project]
-name = "restaurant-voice-agent"
-version = "0.1.0"
-description = "Real-time AI phone receptionist for restaurants (LiveKit Agents)"
+name = "gujju-survey-agent"
+version = "0.2.0"
+description = "AI phone agent that calls numbers from a sheet and runs a Gujarati water-supply survey (LiveKit Agents)"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "gspread>=6.1",
     "httpx>=0.28.1",
     "livekit-agents[deepgram,google,groq,sarvam,silero]>=1.8.9",
     "livekit-plugins-noise-cancellation>=0.3.2",
@@ -20,24 +21,21 @@ module-name = "agent"
 
 [dependency-groups]
 dev = [
-    "datamodel-code-generator>=0.86.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.17.2",
-]
-# Answering Telegram calls with the agent, for testing (python -m agent.telegram_call). Not installed
-# by default, so it stays out of CI and the LiveKit Cloud image: uv run --group telegram-call ...
-telegram-call = [
-    "py-tgcalls[telethon]>=3.0.0",
 ]
 
 [tool.ruff]
 line-length = 110
 target-version = "py312"
-extend-exclude = ["src/agent/api_client/models.py"]  # generated
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# The LLM's instructions are prose: one line per rule reads better than wrapped text.
+"src/agent/survey/reader.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
