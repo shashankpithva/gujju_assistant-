@@ -14,13 +14,14 @@ from livekit.agents.llm import ChatContext, ChatMessage
 from agent.survey.agent import SurveyAgent, last_agent_line, words_since_agent_spoke
 from agent.survey.flow import Survey
 from agent.survey.reader import AnswerReader
-from agent.survey.script import BUSY, QUESTIONS, RECORDED, TO_WATER
+from agent.survey.script import BUSY, QUESTIONS, RECORDED, TO_WATER, TOO_MANY_WRONG
 from tests.conftest import ScriptedLLM
 
 ANSWERS = {
     "હા બોલો": {"intent": "acknowledge"},
     "મારું નામ રમેશભાઈ પટેલ": {"intent": "answer", "name": "રમેશભાઈ પટેલ"},
     "રમેશ": {"intent": "answer", "name": "રમેશ"},
+    "રમેશ પટેલ, ઉંમર પચાસ": {"intent": "answer", "name": "રમેશ પટેલ", "age": 50},
     "ખાંભા": {"intent": "answer", "village": "ખાંભા"},
     "ખાંભા જ": {"intent": "answer", "taluka": "ખાંભા"},
     "અમરેલી": {"intent": "answer", "district": "અમરેલી"},
@@ -49,33 +50,48 @@ async def converse(said: list[str], *, survey: Survey | None = None, model: Scri
 
 async def test_a_whole_survey_from_name_to_goodbye():
     survey, replies, goodbyes, model = await converse(
-        ["હા બોલો", "મારું નામ રમેશભાઈ પટેલ", "ખાંભા", "ખાંભા જ", "અમરેલી", "હા આવે છે", "એકાંતરે", "એક કલાક"]
+        [
+            "હા બોલો",
+            "મારું નામ રમેશભાઈ પટેલ",
+            "45",
+            "ખાંભા",
+            "ખાંભા જ",
+            "અમરેલી",
+            "હા આવે છે",
+            "એકાંતરે",
+            "એક કલાક",
+        ]  # fmt: skip
     )
     assert replies[0] == [QUESTIONS["name"].ask]
-    assert replies[1] == [f"આભાર, રમેશભાઈ પટેલ. {QUESTIONS['village'].ask}"]
-    assert replies[4] == [f"અમરેલી જિલ્લો. {TO_WATER} {QUESTIONS['water_supply'].ask}"]
-    assert replies[7][0].startswith("1 કલાક, બરાબર.") and RECORDED in replies[7][0]
+    assert replies[1] == [f"આભાર, રમેશભાઈ પટેલ. {QUESTIONS['age'].ask}"]
+    assert replies[2] == [f"45 વર્ષ, ઠીક છે. {QUESTIONS['village'].ask}"]
+    assert replies[5] == [f"અમરેલી જિલ્લો. {TO_WATER} {QUESTIONS['water_supply'].ask}"]
+    assert replies[8][0].startswith("1 કલાક, બરાબર.") and RECORDED in replies[8][0]
     assert survey.status == "completed" and len(goodbyes) == 1
-    # Names and places went to the LLM; "હા", "એકાંતરે" and "એક કલાક" didn't need it.
+    # Names and places went to the LLM; "45", "હા", "એકાંતરે" and "એક કલાક" didn't need it.
     assert len(model.requests) == 5
 
 
 async def test_after_the_name_the_survey_goes_straight_on():
     # The reported bug: after the name, the old agent stalled. Here the next question always comes.
-    survey, replies, _, _ = await converse(["રમેશ", "ખાંભા"])
-    assert replies == [[f"આભાર, રમેશ. {QUESTIONS['village'].ask}"], [f"સરસ, ખાંભા. {QUESTIONS['taluka'].ask}"]]
+    survey, replies, _, _ = await converse(["રમેશ", "45", "ખાંભા"])
+    assert replies == [
+        [f"આભાર, રમેશ. {QUESTIONS['age'].ask}"],
+        [f"45 વર્ષ, ઠીક છે. {QUESTIONS['village'].ask}"],
+        [f"સરસ, ખાંભા. {QUESTIONS['taluka'].ask}"],
+    ]
     assert survey.asked == "taluka"
 
 
 async def test_after_the_name_an_unclear_answer_gets_the_question_again():
     survey, replies, _, _ = await converse(["રમેશ", "ઉમ્મ"])
-    assert replies[1] == [QUESTIONS["village"].again]
+    assert replies[1] == [QUESTIONS["age"].again]
 
 
 async def test_the_llm_being_down_doesnt_stop_the_survey():
-    survey, replies, _, _ = await converse(["રમેશ", "ખાંભા"], model=ScriptedLLM(fail=True))
-    assert replies[0] == [f"આભાર, રમેશ. {QUESTIONS['village'].ask}"]
-    assert survey.answers.village == "ખાંભા"
+    survey, replies, _, _ = await converse(["રમેશ", "45", "ખાંભા"], model=ScriptedLLM(fail=True))
+    assert replies[0] == [f"આભાર, રમેશ. {QUESTIONS['age'].ask}"]
+    assert survey.answers.age == 45 and survey.answers.village == "ખાંભા"
 
 
 async def test_the_goodbye_is_said_whole_and_ends_the_call():
@@ -92,7 +108,9 @@ async def test_nothing_is_said_after_the_survey_has_ended():
 
 async def test_a_hello_over_the_introduction_is_not_taken_as_an_answer():
     agent = SurveyAgent(Survey(), AnswerReader(None))
-    hello = ChatMessage(role="user", content=["હેલો?"], metrics={"started_speaking_at": time.time()})
+    # A second early, not time.time(): Windows' clock ticks every 15.6 ms, so a stamp taken now can
+    # equal the one start_listening() takes next, and the hello would count as after the introduction.
+    hello = ChatMessage(role="user", content=["હેલો?"], metrics={"started_speaking_at": time.time() - 1})
     with pytest.raises(StopResponse):  # the introduction hasn't finished
         await agent.on_user_turn_completed(ChatContext(), hello)
     agent.start_listening()
@@ -110,3 +128,18 @@ def test_a_turn_and_its_sequel_are_read_together():
     assert words_since_agent_spoke(ctx) == "રમેશ પટેલ"
     assert last_agent_line(ctx) == "તમારું નામ શું છે?"
     assert words_since_agent_spoke(ChatContext()) == "" and last_agent_line(ChatContext()) == ""
+
+
+async def test_name_and_age_in_one_sentence_go_straight_to_the_village():
+    survey, replies, _, _ = await converse(["રમેશ પટેલ, ઉંમર પચાસ"])
+    assert replies[0] == [f"બરાબર, રમેશ પટેલ અને 50 વર્ષની ઉંમર. {QUESTIONS['village'].ask}"]
+    assert survey.answers.age == 50 and survey.asked == "village"
+
+
+async def test_the_name_again_for_the_age_gets_told_then_the_call_ends():
+    model = ScriptedLLM(
+        lambda said: {"intent": "answer", "name": "રમેશ"} if said == "રમેશ" else {"intent": "wrong_answer"}
+    )
+    survey, replies, goodbyes, _ = await converse(["રમેશ", "રમેશ ભાઈ", "રમેશ ભાઈ", "રમેશ ભાઈ"], model=model)
+    assert replies[1] == [QUESTIONS["age"].wrong]
+    assert replies[3] == [TOO_MANY_WRONG] and survey.status == "partial" and len(goodbyes) == 1

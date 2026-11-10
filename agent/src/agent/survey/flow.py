@@ -5,13 +5,17 @@ the LLM, decides what that line is, so every reply is one of the script's lines 
 - an answer moves on to the next question, saying back what was heard so a mistake is caught;
 - an answer to a later question, or a correction to an earlier one, is taken wherever it's given;
 - "શું?" repeats the question, "who is this?" gets an answer and then the question again;
-- an unclear answer is asked again in other words, and after three tries the survey moves on, so a
-  call can never go round in circles;
+- an unclear answer is asked again in other words, and an answer to another question (their name
+  again, asked their age) gets "I asked about ...", so they know what to say;
+- after MAX_WRONG_ANSWERS wrong or unclear answers to one question the call ends politely, keeping
+  what was answered, so a call can never go round in circles;
 - "no water" skips how often and how long, and "busy" or "not interested" ends the call politely.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal
@@ -38,33 +42,57 @@ from agent.survey.script import (
     RECORDED,
     THANKS,
     TO_WATER,
+    TOO_MANY_WRONG,
     WAITING,
     WATER_DETAILS,
     Script,
 )
 
 Intent = Literal[
-    "answer", "unclear", "repeat", "question", "acknowledge", "wait", "busy", "refuse", "goodbye"
+    "answer", "wrong_answer", "unclear", "repeat", "question", "acknowledge", "wait", "busy", "refuse",
+    "goodbye",
 ]  # fmt: skip
 INTENTS: tuple[str, ...] = (
-    "answer", "unclear", "repeat", "question", "acknowledge", "wait", "busy", "refuse", "goodbye",
+    "answer", "wrong_answer", "unclear", "repeat", "question", "acknowledge", "wait", "busy", "refuse",
+    "goodbye",
 )  # fmt: skip
 AskedAbout = Literal["who", "why", "other"]
 Status = Literal["completed", "partial", "busy", "declined", "no_answer"]
 
+logger = logging.getLogger("agent.survey.flow")
+
 # Answers fields a Reading may carry, as cleaned values (reader.py does the cleaning).
 TEXT_FIELDS = ("name", "village", "taluka", "district")
 VALUE_KEYS = (
-    *TEXT_FIELDS, "water_supply", "frequency_days", "frequency_note", "duration_minutes", "duration_note",
+    *TEXT_FIELDS, "age", "water_supply", "frequency_days", "frequency_note", "duration_minutes",
+    "duration_note",
 )  # fmt: skip
+# The survey field each of the number-or-words keys belongs to; every other key is its own field.
+_FIELD_OF = {
+    "frequency_days": "frequency", "frequency_note": "frequency",
+    "duration_minutes": "duration", "duration_note": "duration",
+}  # fmt: skip
 
 NOTE_LABELS = {
-    "name": "name", "village": "village", "taluka": "taluka", "district": "district",
+    "name": "name", "age": "age", "village": "village", "taluka": "taluka", "district": "district",
     "water_supply": "water supply", "frequency": "how often", "duration": "time per day",
 }  # fmt: skip
 
-MAX_RETRIES = 2  # an unclear answer gets the question again twice; the third time the survey moves on
+# Wrong or unclear answers to one question before the call ends politely: the ones before it get
+# the question again, the last one the goodbye. SURVEY_MAX_WRONG_ANSWERS in agent/.env changes it.
+MAX_WRONG_ANSWERS = 3
 MAX_TURNS = 5  # turns on one question, whatever was said, before moving on
+
+
+def max_wrong_answers() -> int:
+    """SURVEY_MAX_WRONG_ANSWERS, or the default when it's unset or not a whole number from 1 up."""
+    raw = os.getenv("SURVEY_MAX_WRONG_ANSWERS", "").strip()
+    if not raw:
+        return MAX_WRONG_ANSWERS
+    if raw.isdigit() and int(raw) >= 1:
+        return int(raw)
+    logger.warning("SURVEY_MAX_WRONG_ANSWERS=%r isn't a number from 1 up: using %d", raw, MAX_WRONG_ANSWERS)
+    return MAX_WRONG_ANSWERS
 
 
 @dataclass(frozen=True)
@@ -85,19 +113,27 @@ class Reply:
 
 
 class Survey:
-    def __init__(self, script: Script | None = None) -> None:
+    def __init__(self, script: Script | None = None, *, max_wrong: int = MAX_WRONG_ANSWERS) -> None:
         self.script = script or Script()
+        self.max_wrong = max(1, max_wrong)
         self.answers = Answers()
         self.asked: str | None = None  # the field whose question was asked last
-        self.skipped: set[str] = set()  # asked MAX_RETRIES + 1 times without a usable answer
+        self.skipped: set[str] = set()  # no usable answer: the turn cap, or the call ended over it
         self.status: Status | None = None  # set once the call is over
         self.stopped_at: str | None = None  # the question still open when the call ended early
+        self.hung_up_over: str | None = None  # the question that had too many wrong answers
         self.spoke = False  # the person said anything the survey heard
         self.waiting = False  # they asked us to hold on: silence is expected for a while
-        self._retries: Counter[str] = Counter()  # unclear answers, per question
-        self._reasks: Counter[str] = Counter()  # times a question was asked again, for any reason
+        self._wrong: Counter[str] = Counter()  # wrong or unclear answers, per question
+        self._reasks: Counter[str] = Counter()  # times a question was asked again in other words
+        self._pointed: Counter[str] = Counter()  # times "I asked about ..." was said, per question
         self._turns: Counter[str] = Counter()
         self._told_about_water = False
+
+    @classmethod
+    def from_env(cls) -> Survey:
+        """The survey a call runs: its lines and its wrong-answer limit from agent/.env."""
+        return cls(Script.from_env(), max_wrong=max_wrong_answers())
 
     @property
     def finished(self) -> bool:
@@ -119,7 +155,9 @@ class Survey:
             return Reply("", end=True)
         self.spoke = True
         self.waiting = reading.intent == "wait"
-        changed = self._apply(reading.values)
+        # An answer to another question, given instead of this one, fills only questions that have
+        # no answer yet: replacing an answer takes a correction (intent answer).
+        changed = self._apply(reading.values, overwrite=reading.intent != "wrong_answer")
         if reading.intent == "busy":
             return self._finish("busy", BUSY, changed)
         if reading.intent == "refuse":
@@ -136,20 +174,26 @@ class Survey:
             return self._move_on(upcoming, lead=lead, changed=changed)
         if changed:  # a correction or an answer ahead of time; the current question still stands
             heard = f"બરાબર, {_join_and([self._phrase(f) for f in changed])}."
+            self._turns[current] += 1
+            if self._turns[current] >= MAX_TURNS:
+                return self._give_up_on(current, lead=heard, changed=changed)
             return Reply(" ".join(p for p in (reply_to, heard, self.question) if p), changed=changed)
         if reading.intent == "wait":
             return Reply(WAITING)
 
         self._turns[current] += 1
+        if reading.intent in ("repeat", "acknowledge", "question"):
+            if self._turns[current] >= MAX_TURNS:
+                return self._give_up_on(current)
+            return Reply(f"{reply_to} {self.question}" if reading.intent == "question" else self.question)
+        # Unclear, or an answer that isn't to this question (anything new in it was taken above).
+        self._wrong[current] += 1
+        if self._wrong[current] >= self.max_wrong:
+            return self._hang_up_over(current)
         if self._turns[current] >= MAX_TURNS:
             return self._give_up_on(current)
-        if reading.intent in ("repeat", "acknowledge"):
-            return Reply(self.question)
-        if reading.intent == "question":
-            return Reply(f"{reply_to} {self.question}")
-        self._retries[current] += 1
-        if self._retries[current] > MAX_RETRIES:
-            return self._give_up_on(current)
+        if reading.intent == "wrong_answer" or reading.values:
+            return Reply(self._point_back(current))
         return Reply(self._ask_again(current))
 
     def didnt_hear(self) -> str:
@@ -174,6 +218,9 @@ class Survey:
         unclear = [NOTE_LABELS[f] for f in FIELDS if f in self.skipped]
         if self.status == "completed":
             return f"Unclear: {', '.join(unclear)}" if unclear else ""
+        if self.status == "partial" and self.hung_up_over:
+            label = NOTE_LABELS[self.hung_up_over]
+            return f"Hung up after {self.max_wrong} wrong or unclear answers to the {label} question"
         if self.status == "partial":
             where = NOTE_LABELS.get(self.stopped_at or "", "")
             return f"Call ended at the {where} question" if where else "Call ended early"
@@ -191,13 +238,7 @@ class Survey:
             return True
         if field_name in WATER_DETAILS and (a.water_supply is False or "water_supply" in self.skipped):
             return True
-        if field_name == "frequency":
-            return a.frequency_days is not None or a.frequency_note is not None
-        if field_name == "duration":
-            return a.duration_minutes is not None or a.duration_note is not None
-        if field_name == "water_supply":
-            return a.water_supply is not None
-        return getattr(a, field_name) is not None
+        return self._has_answer(field_name)
 
     def sheet_values(self) -> dict[str, str]:
         """Every answer the way the sheet shows it; blank for a question not reached yet."""
@@ -205,6 +246,10 @@ class Survey:
         values: dict[str, str] = {}
         for name in TEXT_FIELDS:
             values[name] = getattr(a, name) or (UNCLEAR if name in self.skipped else "")
+        if a.age is not None:
+            values["age"] = str(a.age)
+        else:
+            values["age"] = UNCLEAR if "age" in self.skipped else ""
         if a.water_supply is not None:
             values["water_supply"] = water_text(a.water_supply)
         else:
@@ -222,15 +267,27 @@ class Survey:
                 values[name] = UNCLEAR
             else:
                 values[name] = ""
-        return values
+        return {name: values[name] for name in FIELDS}  # in the order they're asked
 
     # Internals ----------------------------------------------------------------------------------
+
+    def _has_answer(self, field_name: str) -> bool:
+        a = self.answers
+        if field_name == "frequency":
+            return a.frequency_days is not None or a.frequency_note is not None
+        if field_name == "duration":
+            return a.duration_minutes is not None or a.duration_note is not None
+        return getattr(a, field_name) is not None
 
     def _next(self) -> str | None:
         return next((f for f in FIELDS if not self.is_done(f)), None)
 
-    def _apply(self, values: dict[str, object]) -> tuple[str, ...]:
-        """Take every answer in the turn, wherever it belongs. Returns the fields that changed."""
+    def _apply(self, values: dict[str, object], *, overwrite: bool = True) -> tuple[str, ...]:
+        """Take every answer in the turn, wherever it belongs. Returns the fields that changed.
+
+        `overwrite` False: only questions with no answer yet take a value."""
+        if not overwrite:
+            values = {k: v for k, v in values.items() if not self._has_answer(_FIELD_OF.get(k, k))}
         a = self.answers
         changed: set[str] = set()
         for name in TEXT_FIELDS:
@@ -238,6 +295,10 @@ class Survey:
             if isinstance(value, str) and value and value != getattr(a, name):
                 setattr(a, name, value)
                 changed.add(name)
+        age = values.get("age")
+        if isinstance(age, int) and not isinstance(age, bool) and age != a.age:
+            a.age = age
+            changed.add("age")
         days, days_note = values.get("frequency_days"), values.get("frequency_note")
         minutes, minutes_note = values.get("duration_minutes"), values.get("duration_note")
         water = values.get("water_supply")
@@ -289,9 +350,24 @@ class Survey:
         question = QUESTIONS[current]
         return question.again if self._reasks[current] % 2 else f"{ONCE_MORE} {question.ask}"
 
-    def _give_up_on(self, current: str) -> Reply:
+    def _point_back(self, current: str) -> str:
+        """An answer to another question: say which one was asked; the next time, ask once more."""
+        self._pointed[current] += 1
+        question = QUESTIONS[current]
+        return question.wrong if self._pointed[current] % 2 else f"{ONCE_MORE} {question.ask}"
+
+    def _give_up_on(self, current: str, *, lead: str = "", changed: tuple[str, ...] = ()) -> Reply:
+        """The turn cap: leave the question unanswered and go on to the next."""
         self.skipped.add(current)
-        return self._move_on(self._next(), lead=MOVE_ON)
+        return self._move_on(self._next(), lead=" ".join(p for p in (lead, MOVE_ON) if p), changed=changed)
+
+    def _hang_up_over(self, current: str) -> Reply:
+        """Too many wrong or unclear answers to one question: end the call politely, keeping the
+        answers so far. The question shows as unclear in the sheet."""
+        status = self._status_when_cut_short()
+        self.skipped.add(current)
+        self.hung_up_over = current
+        return self._finish(status, TOO_MANY_WRONG)
 
     def _finish(self, status: Status, line: str, changed: tuple[str, ...] = ()) -> Reply:
         self.status = status
@@ -322,6 +398,8 @@ class Survey:
         a, only = self.answers, shown[0]
         if only == "name":
             return f"આભાર, {a.name}."
+        if only == "age":
+            return f"{a.age} વર્ષ, ઠીક છે."
         if only == "village":
             return f"સરસ, {a.village}."
         if only == "taluka":
@@ -338,6 +416,8 @@ class Survey:
         a = self.answers
         if field_name == "name":
             return a.name or ""
+        if field_name == "age":
+            return "" if a.age is None else f"{a.age} વર્ષની ઉંમર"
         if field_name == "village":
             return f"{a.village} ગામ" if a.village else ""
         if field_name == "taluka":

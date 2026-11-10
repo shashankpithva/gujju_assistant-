@@ -42,6 +42,7 @@ COLUMNS: tuple[Column, ...] = (
         ),
     ),  # fmt: skip
     Column("name", "Name / નામ", ("name", "naam", "નામ")),
+    Column("age", "Age / ઉંમર", ("age", "umar", "umra", "ઉંમર", "ઉમર", "વય")),
     Column("village", "Village / ગામ", ("village", "gaam", "gam", "town", "ગામ")),
     Column("taluka", "Taluka / તાલુકો", ("taluka", "taluko", "tehsil", "તાલુકો", "તાલુકા")),
     Column("district", "District / જિલ્લો", ("district", "jillo", "jilla", "જિલ્લો", "જીલ્લો", "જિલ્લા")),
@@ -68,7 +69,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("transcript", "Transcript", ("transcript", "conversation", "વાતચીત")),
 )
 KEYS: tuple[str, ...] = tuple(c.key for c in COLUMNS)
-ANSWER_KEYS = ("name", "village", "taluka", "district", "water_supply", "frequency", "duration")
+ANSWER_KEYS = ("name", "age", "village", "taluka", "district", "water_supply", "frequency", "duration")
 
 
 def _normal(text: str) -> str:

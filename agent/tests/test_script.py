@@ -11,7 +11,7 @@ CONSTANT_LINES = [
     for name, value in vars(script).items()
     if name.isupper() and isinstance(value, str) and any("઀" <= ch <= "૿" for ch in value)
 ]
-QUESTION_LINES = [line for q in QUESTIONS.values() for line in (q.ask, q.again)]
+QUESTION_LINES = [line for q in QUESTIONS.values() for line in (q.ask, q.again, q.wrong)]
 SCRIPTS = [Script(), Script(org="ગ્રામ પંચાયત"), Script(org="જળ સેવા ટ્રસ્ટ")]
 SCRIPT_LINES = [line for s in SCRIPTS for line in (s.intro(), s.who(), s.why())]
 
@@ -26,8 +26,8 @@ def test_every_line_sounds_spoken_and_fits_either_voice(line, gender):
 
 def test_each_question_is_one_question():
     for question in QUESTIONS.values():
-        assert question.ask.endswith("?") and question.again.endswith("?")
-        assert question.ask != question.again
+        assert question.ask.endswith("?") and question.again.endswith("?") and question.wrong.endswith("?")
+        assert len({question.ask, question.again, question.wrong}) == 3
 
 
 def test_the_introduction_says_who_it_is_and_that_its_an_ai():

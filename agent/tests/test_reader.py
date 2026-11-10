@@ -5,7 +5,15 @@ import asyncio
 import pytest
 
 from agent.survey.flow import Reading, Survey
-from agent.survey.reader import AnswerReader, asked_just_now, describe_turn, fallback_reading, reading_from
+from agent.survey.reader import (
+    AnswerReader,
+    asked_just_now,
+    checked_against_words,
+    describe_turn,
+    fallback_reading,
+    in_their_script,
+    reading_from,
+)
 from agent.survey.script import CHECK_IN, QUESTIONS
 from tests.conftest import ScriptedLLM
 
@@ -108,6 +116,9 @@ def test_water_supply_may_come_as_a_boolean():
         ("name", "હા બોલો", "unclear", {}),
         ("name", "અમારા ગામમાં તો પાણી બહુ ઓછું આવે છે ભાઈ", "unclear", {}),  # a sentence, not a name
         ("taluka", "ખાંભા તાલુકો", "answer", {"taluka": "ખાંભા"}),
+        ("age", "મારી ઉંમર 62 છે", "answer", {"age": 62}),
+        ("age", "રમેશ", "unclear", {}),
+        ("age", "એક મિનિટ", "unclear", {}),
         ("water_supply", "નથી આવતું", "answer", {"water_supply": False}),
         ("duration", "સવા કલાક", "answer", {"duration_minutes": 75}),
         ("duration", "ખબર નથી", "unclear", {}),
@@ -134,3 +145,62 @@ async def test_reading_takes_no_longer_than_its_timeout():
     started = asyncio.get_running_loop().time()
     await AnswerReader(model, timeout=0.1).read(at("name"), "રમેશ")
     assert asyncio.get_running_loop().time() - started < 1
+
+
+async def test_a_plain_age_skips_the_llm():
+    model = ScriptedLLM()
+    reading = await AnswerReader(model).read(at("age"), "પિસ્તાલીસ વર્ષ", last_line=QUESTIONS["age"].ask)
+    assert reading == Reading("answer", {"age": 45}, source="rules") and model.requests == []
+
+
+async def test_an_age_in_a_sentence_goes_to_the_llm():
+    model = ScriptedLLM({"રમેશ પટેલ, ઉંમર પચાસ": {"intent": "answer", "name": "રમેશ પટેલ", "age": 50}})
+    reading = await AnswerReader(model).read(at("name"), "રમેશ પટેલ, ઉંમર પચાસ")
+    assert reading.values == {"name": "રમેશ પટેલ", "age": 50} and len(model.requests) == 1
+
+
+def test_the_age_the_llm_records_is_checked():
+    assert reading_from({"intent": "answer", "age": "45"}).values == {"age": 45}
+    assert reading_from({"intent": "answer", "age": 300}).intent == "unclear"  # not an age
+    assert reading_from({"intent": "answer", "age": 0}).values == {}
+
+
+def test_a_wrong_answer_is_its_own_intent():
+    reading = reading_from({"intent": "wrong_answer", "name": "રમેશ"})
+    assert reading.intent == "wrong_answer" and reading.values == {"name": "રમેશ"}
+    assert reading_from({"intent": "wrong_answer"}).intent == "wrong_answer"
+
+
+async def test_a_word_the_llm_wrote_in_english_letters_is_taken_from_what_was_said():
+    said = "મારું નામ રમેશભાઈ પટેલ છે"
+    model = ScriptedLLM({said: {"intent": "answer", "name": "રમેશભાઈ Patel"}})
+    reading = await AnswerReader(model).read(at("name"), said)
+    assert reading.values == {"name": "રમેશભાઈ પટેલ"}
+    several = Reading("answer", {"name": "Ramesh પટેલ", "village": "ખાંભા"})
+    assert in_their_script(several, "રમેશ પટેલ, ગામ ખાંભા").values == {"name": "રમેશ પટેલ", "village": "ખાંભા"}
+
+
+def test_english_letters_stay_when_the_person_used_them_or_theres_nothing_to_go_by():
+    typed = Reading("answer", {"name": "Ramesh Patel"})
+    assert in_their_script(typed, "maru naam Ramesh Patel") == typed
+    alone = Reading("answer", {"name": "Patel"})
+    assert in_their_script(alone, "પટેલ") == alone
+
+
+async def test_an_age_the_llm_misread_is_taken_from_the_number_said():
+    said = "બાસઠ વર્ષ થયા, ગામ ખાંભા"
+    model = ScriptedLLM({said: {"intent": "answer", "age": 52, "village": "ખાંભા"}})  # બાસઠ is 62
+    reading = await AnswerReader(model).read(at("age"), said)
+    assert reading.values == {"age": 62, "village": "ખાંભા"}
+
+
+def test_with_two_numbers_in_the_turn_the_llms_age_stands():
+    reading = Reading("answer", {"age": 45})
+    assert checked_against_words(reading, "ઉંમર 45, બે છોકરા છે") == reading
+
+
+def test_a_correction_read_as_a_wrong_answer_is_an_answer():
+    corrected = Reading("wrong_answer", {"village": "ખંભાળિયા"})
+    assert checked_against_words(corrected, "ના ના, ગામ ખાંભા નહીં, ખંભાળિયા").intent == "answer"
+    repeated = Reading("wrong_answer", {"name": "રમેશ"})
+    assert checked_against_words(repeated, "રમેશ") == repeated

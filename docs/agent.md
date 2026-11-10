@@ -2,7 +2,7 @@
 
 Owner: agent track (see [.github/CODEOWNERS](../.github/CODEOWNERS))
 
-The agent phones each number in a sheet, asks seven questions about the water supply in Gujarati, writes every answer into the sheet the moment it's given, thanks the person and hangs up. It's a LiveKit voice agent: Sarvam hears and speaks Gujarati, and an LLM (Groq, with Gemini behind it) reads each answer.
+The agent phones each number in a sheet, asks eight questions about the water supply in Gujarati, writes every answer into the sheet the moment it's given, thanks the person and hangs up. It's a LiveKit voice agent: Sarvam hears and speaks Gujarati, and an LLM (Groq, with Gemini behind it) reads each answer.
 
 ```mermaid
 flowchart LR
@@ -20,18 +20,19 @@ After the person picks up and says "હેલો?", the agent introduces itself 
 | # | Question | Example answers | In the sheet |
 |---|---|---|---|
 | 1 | તમારું નામ શું છે? | મારું નામ રમેશભાઈ પટેલ | રમેશભાઈ પટેલ |
-| 2 | તમારું ગામ કયું છે? | ખાંભા | ખાંભા |
-| 3 | તાલુકો કયો છે? | ખાંભા જ | ખાંભા |
-| 4 | અને જિલ્લો કયો છે? | અમરેલી | અમરેલી |
-| 5 | તમારે ત્યાં પાણી આવે છે? | હા / ના | હા / ના |
-| 6 | પાણી કેટલા દિવસે આવે છે? | રોજ, એકાંતરે, ત્રણ દિવસે એક વાર | રોજ, એકાંતરે (દર 2 દિવસે) |
-| 7 | દિવસમાં કેટલો સમય પાણી આવે છે? | અડધો કલાક, સવારે છ થી આઠ | અડધો કલાક (30 મિનિટ) |
+| 2 | તમારી ઉંમર કેટલી છે? | પચાસ વર્ષ, 45, મારે સાઠ થયા | 50 |
+| 3 | તમારું ગામ કયું છે? | ખાંભા | ખાંભા |
+| 4 | તાલુકો કયો છે? | ખાંભા જ | ખાંભા |
+| 5 | અને જિલ્લો કયો છે? | અમરેલી | અમરેલી |
+| 6 | તમારે ત્યાં પાણી આવે છે? | હા / ના | હા / ના |
+| 7 | પાણી કેટલા દિવસે આવે છે? | રોજ, એકાંતરે, ત્રણ દિવસે એક વાર | રોજ, એકાંતરે (દર 2 દિવસે) |
+| 8 | દિવસમાં કેટલો સમય પાણી આવે છે? | અડધો કલાક, સવારે છ થી આઠ | અડધો કલાક (30 મિનિટ) |
 
-If water doesn't come, questions 6 and 7 are skipped. A call goes like this:
+If water doesn't come, questions 7 and 8 are skipped. A call goes like this:
 
 > **AI:** નમસ્તે! હું ગ્રામ પંચાયત તરફથી AI આસિસ્ટન્ટ બોલું છું. પાણીની સુવિધા વિશે બે મિનિટનો નાનો સર્વે છે. તમારું નામ શું છે?<br>
-> **Person:** મારું નામ રમેશભાઈ પટેલ.<br>
-> **AI:** આભાર, રમેશભાઈ પટેલ. તમારું ગામ કયું છે?<br>
+> **Person:** મારું નામ રમેશભાઈ પટેલ, ઉંમર પચાસ.<br>
+> **AI:** બરાબર, રમેશભાઈ પટેલ અને 50 વર્ષની ઉંમર. તમારું ગામ કયું છે?<br>
 > **Person:** ખાંભા, તાલુકો ખાંભા ને જિલ્લો અમરેલી.<br>
 > **AI:** બરાબર, ખાંભા ગામ, ખાંભા તાલુકો અને અમરેલી જિલ્લો. હવે પાણી વિશે પૂછું. તમારે ત્યાં પાણી આવે છે?<br>
 > **Person:** હા, એકાંતરે આવે છે.<br>
@@ -43,7 +44,9 @@ What it handles:
 - **Several answers at once**, as above, and **corrections** ("ના, ગામ ખાંભા નહીં, ખંભાળિયા") at any point.
 - **Saying back** each name and place, so a misheard one gets corrected straight away.
 - **"શું?"** repeats the question. **"તમે કોણ બોલો છો?"** and **"આ શેના માટે?"** get an answer, then the question again.
-- **Unclear answers** get the question in other words. After three tries the survey moves on and the sheet says `(સ્પષ્ટ નથી)`, so a call never goes round in circles.
+- **An answer to another question**, such as the name again when asked the age, or something unrelated, gets the question it was meant for: "માફ કરજો, મેં તમારી ઉંમર પૂછી હતી. તમને કેટલા વર્ષ થયા?". An earlier answer said again never replaces the saved one. A correction does ("મહેશ નહીં, રમેશ", right after the agent said "મહેશ"), and doesn't count as wrong. Neither does an answer to a later question: it's kept, and that question isn't asked.
+- **Unclear answers** get the question in other words.
+- **Three wrong or unclear answers to the same question end the call** with a polite goodbye (`SURVEY_MAX_WRONG_ANSWERS`), so a call never goes round in circles. The answers so far are kept, the status is `partial`, the question shows `(સ્પષ્ટ નથી)`, and Notes says `Hung up after 3 wrong or unclear answers to the age question`.
 - **"એક મિનિટ"** (hold on): it waits, and is three times as patient with the silence.
 - **"હું બિઝી છું, પછી ફોન કરજો"** ends politely as `busy`, to be called again. **Not interested** ends as `declined`.
 - **Silence**: "હેલો, તમને મારો અવાજ સંભળાય છે?", then goodbye if there's still nothing.
@@ -56,11 +59,11 @@ Put phone numbers in a column headed `Phone` (or `ફોન નંબર`, `Mobi
 | Column | Filled by | What it holds |
 |---|---|---|
 | Phone / ફોન નંબર | you | The number to call |
-| Name, Village, Taluka, District, Water comes?, How often, Time per day | agent | The answers, as each one is given |
+| Name, Age, Village, Taluka, District, Water comes?, How often, Time per day | agent | The answers, as each one is given |
 | Status | dialer, agent | Empty: not called yet. `calling` during the call, then `completed`, `partial`, `busy`, `no_answer`, `declined` or `failed` |
 | Attempts | dialer | Calls made to this number |
 | Last call | dialer, agent | When, in `SURVEY_TIMEZONE` |
-| Notes | agent | How it went: `Busy or rejected (486 Busy Here)`, `Call ended at the village question`, `Unclear: name` |
+| Notes | agent | How it went: `Busy or rejected (486 Busy Here)`, `Call ended at the village question`, `Hung up after 3 wrong or unclear answers to the age question`, `Unclear: name` |
 | Call ID | agent | The call's id, as in the agent's log |
 | Transcript | agent | The whole conversation |
 
@@ -191,7 +194,7 @@ A deployed agent needs the Google Sheet: it can't see a CSV on your computer. Th
 | [languages.py](../agent/src/agent/languages.py) | Sarvam hearing and voice, the turn detector |
 | [gujarati/](../agent/src/agent/gujarati/) | Gujarati numbers and times, text for the voice, the style linter |
 
-**The LLM never decides what to say.** On each turn the reader asks it one small question, "what did the person answer?", and it must reply with a function call (`record_answer`), never with words. The flow then picks the next line from the script. So the call can't drift off-topic, invent a question, or forget where it was after an answer it didn't expect. Short answers the rules understand completely ("હા", "રોજ", "અડધો કલાક") skip the LLM altogether: about a second sooner, and one request fewer against the free tier. When the LLM fails or is slow (5 s), the rules read the answer instead, so the call carries on.
+**The LLM never decides what to say.** On each turn the reader asks it one small question, "what did the person answer?", and it must reply with a function call (`record_answer`), never with words. The flow then picks the next line from the script. So the call can't drift off-topic, invent a question, or forget where it was after an answer it didn't expect. Short answers the rules understand completely ("હા", "રોજ", "અડધો કલાક") skip the LLM altogether: about a second sooner, and one request fewer against the free tier. When the LLM fails or is slow (5 s), the rules read the answer instead, so the call carries on. What the LLM reads is also checked against the person's own words, for three slips seen in the evals: an age is taken from the one number they said (it misreads some Gujarati number words, "બાસઠ" as 52), a turn with "નહીં" or "ખોટું" in it is a correction even if the LLM calls it a wrong answer, and a word of a name it writes in English letters is taken back from the Gujarati they said.
 
 **The sheet fills in live.** Each answer is written to its row in the background while the call goes on, and a final write at the end holds every answer, the status and the transcript. A failed write is logged and retried with the next, and never interrupts the call.
 
@@ -214,6 +217,7 @@ All in [.env.example](../agent/.env.example), each explained in place. The ones 
 | `SURVEY_ORG_NAME` | empty | Who the call is from, said in the introduction: `ગ્રામ પંચાયત` |
 | `SURVEY_PURPOSE` | about collecting water information | The answer to "why are you asking?" |
 | `SURVEY_CALL_HOURS` | `9-21` | When the dialer may call |
+| `SURVEY_MAX_WRONG_ANSWERS` | 3 | Wrong or unclear answers to one question before the call ends politely |
 | `MAX_CALL_SECONDS` | 240 | Longest call |
 | `SILENCE_CHECK_IN_SECONDS` | 8 | Silence before "હેલો, ... સંભળાય છે?", and again before hanging up |
 | `ENDPOINTING_MIN_DELAY`, `ENDPOINTING_MAX_DELAY` | 0.7, 2.0 | How long a pause ends an answer |
@@ -230,7 +234,7 @@ uv run pytest evals -v                                             # the real LL
 
 [tests/](../agent/tests/) cover the flow, the reader, the rules, both sheets, the dialer and the call controls. [test_session.py](../agent/tests/test_session.py) runs whole surveys through LiveKit's own `AgentSession` with a scripted LLM, including the after-the-name cases and a failed LLM.
 
-[evals/test_reading.py](../agent/evals/test_reading.py) gives the real LLM 24 answers as people really say them: names, places, corrections, numbers of days and hours, "hold on", busy, and "yes" to "can you hear me?". It uses one request per case, so it isn't in CI. Run it after changing the reader's instructions or the model, and compare models with `GROQ_MODELS=openai/gpt-oss-20b uv run pytest evals -v` or `LLM_PROVIDER=gemini`.
+[evals/test_reading.py](../agent/evals/test_reading.py) gives the real LLM 37 answers as people really say them: names, ages, places, several answers at once, corrections, wrong answers (the name again when asked the age), a taluka named like its village, numbers of days and hours, "hold on", busy, and "yes" to "can you hear me?". It uses one request per case, so it isn't in CI. It pauses 15 s between cases (`EVAL_PAUSE_SECONDS`), because Groq's free tier allows about four readings a minute and a case that hits the limit falls back to the rules, which measures nothing; the run takes about 10 minutes. Run it after changing the reader's instructions or the model, and compare models with `GROQ_MODELS=openai/gpt-oss-20b uv run pytest evals -v` or `LLM_PROVIDER=gemini`.
 
 ## Latency
 

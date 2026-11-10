@@ -209,8 +209,8 @@ async def test_google_sheet_reads_numbers_and_completes_the_header():
     sheet, worksheet = google_with([["Phone", "Name"], ["9876543210", ""], ["", ""], ["+919876500000", ""]])
     contacts = await sheet.contacts()
     assert [(c.row, c.phone) for c in contacts] == [(2, "9876543210"), (4, "+919876500000")]
-    assert worksheet.rows[0][:3] == ["Phone", "Name", "Village / ગામ"]
-    assert len(worksheet.rows[0]) == 14
+    assert worksheet.rows[0][:3] == ["Phone", "Name", "Age / ઉંમર"]
+    assert len(worksheet.rows[0]) == 15
 
 
 async def test_google_sheet_writes_only_the_cells_that_changed():
@@ -227,7 +227,7 @@ async def test_google_sheet_grows_when_a_column_is_beyond_its_edge():
     sheet, worksheet = google_with([["Phone"]])
     worksheet.col_count = 5
     await sheet.contacts()
-    assert worksheet.col_count >= 14
+    assert worksheet.col_count >= 15
 
 
 async def test_google_sheet_appends_a_test_call_and_learns_its_row():
@@ -280,6 +280,7 @@ def test_the_service_account_key_can_come_as_a_file_text_or_base64(monkeypatch, 
 def test_every_answer_has_a_column():
     assert set(ANSWER_KEYS) == {
         "name",
+        "age",
         "village",
         "taluka",
         "district",

@@ -3,7 +3,9 @@
 import pytest
 
 from agent.survey.answers import (
+    age_from,
     asks_to_repeat,
+    clean_age,
     clean_days,
     clean_minutes,
     clean_note,
@@ -14,6 +16,7 @@ from agent.survey.answers import (
     is_busy,
     minutes_from,
     says_goodbye,
+    says_its_wrong,
     yes_or_no,
 )
 
@@ -193,3 +196,42 @@ def test_busy(said):
 def test_goodbyes():
     assert says_goodbye("આવજો") and says_goodbye("ચાલો ફોન મૂકું છું") and says_goodbye("ok bye")
     assert not says_goodbye("આવે છે") and not says_goodbye("ફોન નંબર")
+
+
+@pytest.mark.parametrize(
+    ("said", "age"),
+    [
+        ("45", 45),
+        ("પિસ્તાલીસ", 45),
+        ("45 વર્ષ", 45),
+        ("૫૫ વરસ", 55),
+        ("મારી ઉંમર 62 છે", 62),
+        ("મારે સાઠ થયા", 60),
+        ("લગભગ પચાસ", 50),
+        ("45 વર્ષનો છું", 45),
+    ],
+)
+def test_a_plain_age_is_read_without_the_llm(said, age):
+    assert age_from(said, strict=True) == age
+
+
+@pytest.mark.parametrize("said", ["રમેશ", "એક મિનિટ", "40-45", "બે દિવસે", "પચાસ પંચાવન", "300"])
+def test_anything_else_isnt_taken_as_an_age(said):
+    assert age_from(said, strict=True) is None
+
+
+def test_ages_are_checked():
+    assert clean_age(45.4) == 45 and clean_age("70") == 70
+    assert clean_age(0) is None and clean_age(121) is None and clean_age(True) is None
+
+
+@pytest.mark.parametrize(
+    "said", ["ના ના, ગામ ખાંભા નહીં, ખંભાળિયા", "નામ ખોટું લખ્યું", "મહેશ નહીં, રમેશ", "no, Ramesh"]
+)
+def test_the_words_of_a_correction(said):
+    assert says_its_wrong(said)
+
+
+@pytest.mark.parametrize("said", ["ખાંભા જ", "રમેશ પટેલ", "હા, આવે છે"])
+def test_other_words_arent_a_correction(said):
+    assert not says_its_wrong(said)

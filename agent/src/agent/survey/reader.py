@@ -14,14 +14,18 @@ Three ways to read a turn, in order:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
+import re
 from typing import Any
 
 from livekit.agents import llm
 
 from agent.survey.answers import (
+    age_from,
     asks_to_repeat,
+    clean_age,
     clean_days,
     clean_minutes,
     clean_note,
@@ -30,6 +34,7 @@ from agent.survey.answers import (
     is_busy,
     minutes_from,
     says_goodbye,
+    says_its_wrong,
     yes_or_no,
 )
 from agent.survey.flow import INTENTS, TEXT_FIELDS, Reading, Survey
@@ -46,6 +51,7 @@ You read one turn of a phone survey in Gujarat and record it with the record_ans
 
 The survey asks these, in this order:
 - name: the person's name.
+- age: how old they are, in whole years (ઉંમર). "પચાસ" = 50, "લગભગ 45" = 45, a range ("40-45") = the middle, rounded down: 42.
 - village: their village or town (ગામ).
 - taluka: their taluka (તાલુકો).
 - district: their district (જિલ્લો).
@@ -57,15 +63,19 @@ The words come from speech recognition: expect Gujarati, Hindi or English words 
 
 Rules:
 - Record only what the person actually said. Never guess, and never fill a field from general knowledge (don't add a district because you know where a village is).
-- They usually answer the question just asked, but may answer several at once, or correct an earlier answer ("ના, ગામ ખાંભા છે"): record those too.
-- Write names and places in Gujarati script, spelled as commonly written ("ભાવનગર", "રાજકોટ"), without filler such as "મારું નામ", "ગામ" or "છે". Keep ભાઈ or બેન if they said it.
+- They usually answer the question just asked, but may answer several at once ("રમેશ પટેલ, પચાસ વર્ષ" is a name and an age), or correct an earlier answer: record those too.
+- A correction says the earlier answer was wrong ("ના, ગામ ખાંભા નહીં, ખંભાળિયા"), or gives a different answer right after the agent's last words said that answer back. It's intent answer, even when it doesn't answer the question just asked.
+- wrong_answer is only for a turn that brings nothing new: an answer already given, said again unchanged, instead of answering the question just asked (their name again when asked their age), or words that answer none of the questions ("હું ખેતી કરું છું" when asked the village). A new or changed answer to any question, asked or not, is intent answer. Never call an answer wrong because it seems untrue or unlikely.
+- A taluka or district is often named after its main village: the village's name given to the taluka or district question ("ખાંભા", "ખાંભા જ") answers it. That isn't wrong_answer.
+- Write names and places in Gujarati script, every word of them ("રમેશભાઈ પટેલ", never "રમેશભાઈ Patel"), spelled as commonly written ("ભાવનગર", "રાજકોટ"), without filler such as "મારું નામ", "ગામ" or "છે". Keep ભાઈ or બેન if they said it.
 - When how often or how long isn't a plain number ("ક્યારેક", "નક્કી નહીં"), put their words in frequency_note or duration_note.
 - "એક મિનિટ" or "બે મિનિટ" on its own usually means "hold on" (intent wait), not a duration.
 - When the agent's last words weren't the question (for example "હેલો, તમને મારો અવાજ સંભળાય છે?"), a bare "હા" answers those words: intent acknowledge, not an answer to the question.
 
 intent:
-- answer: they answered at least one question.
-- unclear: you can't tell what they said, or it doesn't answer the question.
+- answer: they answered at least one question, or corrected an earlier answer.
+- wrong_answer: the words are clear but bring nothing new: an answer already given, said again, or words that answer no question (see the rules).
+- unclear: you can't make out what they said, or it's too vague to record.
 - repeat: they ask to hear the question again ("શું?", "ફરીથી બોલો").
 - question: they ask something back. Set asked_about: who (who is calling), why (why these questions) or other.
 - acknowledge: only "હા", "બોલો", "ઠીક છે" or similar, to a question that isn't yes or no.
@@ -78,6 +88,12 @@ Examples (question asked: what they said -> what to record):
 - name: "હા બોલો" -> intent acknowledge
 - name: "મારું નામ રમેશભાઈ પટેલ" -> answer, name "રમેશભાઈ પટેલ"
 - name: "Ramesh" -> answer, name "રમેશ"
+- name: "રમેશ પટેલ, ઉંમર પચાસ" -> answer, name "રમેશ પટેલ", age 50
+- age: "મારી ઉંમર પિસ્તાલીસ વર્ષ" -> answer, age 45
+- age, answers so far name રમેશ પટેલ: "રમેશ પટેલ" -> intent wrong_answer
+- age, the agent's last words "આભાર, મહેશ. તમારી ઉંમર કેટલી છે?": "મહેશ નહીં, રમેશ" -> answer, name "રમેશ"
+- village: "હું ખેતી કરું છું" -> intent wrong_answer
+- taluka, answers so far village ખાંભા: "ખાંભા જ" -> answer, taluka "ખાંભા"
 - village: "ખાંભા, તાલુકો ખાંભા ને જિલ્લો અમરેલી" -> answer, village "ખાંભા", taluka "ખાંભા", district "અમરેલી"
 - taluka: "ના ના, ગામ ખાંભા નહીં, ખંભાળિયા" -> answer, village "ખંભાળિયા"
 - water_supply: "હા, આવે છે ને રોજ સવારે" -> answer, water_supply yes, frequency_days 1
@@ -102,6 +118,7 @@ RECORD_ANSWER = {
                 "description": "Only for intent question.",
             },
             "name": {"type": "string", "description": "The person's name, in Gujarati script."},
+            "age": {"type": "number", "description": "Their age in years."},
             "village": {"type": "string", "description": "Their village or town, in Gujarati script."},
             "taluka": {"type": "string", "description": "Their taluka, in Gujarati script."},
             "district": {"type": "string", "description": "Their district, in Gujarati script."},
@@ -137,9 +154,11 @@ class AnswerReader:
             return quick
         if self._llm is not None:
             try:
-                return await asyncio.wait_for(self._ask_llm(survey, said, last_line), self._timeout)
+                reading = await asyncio.wait_for(self._ask_llm(survey, said, last_line), self._timeout)
             except Exception as e:  # any failure: the rules below keep the call going
                 logger.warning("the LLM couldn't read the answer, using the rules instead: %r", e)
+            else:
+                return checked_against_words(reading, said)
         return fallback_reading(current, said, asked=asked)
 
     async def _ask_llm(self, survey: Survey, said: str, last_line: str) -> Reading:
@@ -182,6 +201,8 @@ def reading_from(arguments: dict[str, Any]) -> Reading:
     for name in TEXT_FIELDS:
         if (text := clean_text(arguments.get(name))) is not None:
             values[name] = text
+    if (age := clean_age(arguments.get("age"))) is not None:
+        values["age"] = age
     water = arguments.get("water_supply")
     if isinstance(water, bool):
         values["water_supply"] = water
@@ -205,6 +226,58 @@ def reading_from(arguments: dict[str, Any]) -> Reading:
     return Reading(intent, values, asked_about, source="llm")  # type: ignore[arg-type]
 
 
+_LATIN = re.compile(r"[A-Za-z]")
+_EDGE = " \t\n.,!?।;:\"'`()[]{}<>-–—…"
+
+
+def checked_against_words(reading: Reading, said: str) -> Reading:
+    """Slips the LLM makes that the person's own words catch, tested in evals/test_reading.py."""
+    values, intent = dict(reading.values), reading.intent
+    # Gujarati number words misread ("બાસઠ", 62, as 52): with one number in the turn, it's the age.
+    if "age" in values and (counted := age_from(said)) is not None and counted != values["age"]:
+        logger.info("the LLM read the age as %s; the words say %s", values["age"], counted)
+        values["age"] = counted
+    # "ના, ગામ ખાંભા નહીં, ખંભાળિયા" while asked the taluka: a correction, not a wrong answer, so
+    # it may replace the village it corrects.
+    if intent == "wrong_answer" and values and says_its_wrong(said):
+        intent = "answer"
+    if (values, intent) != (reading.values, reading.intent):
+        reading = dataclasses.replace(reading, values=values, intent=intent)
+    return in_their_script(reading, said)
+
+
+def in_their_script(reading: Reading, said: str) -> Reading:
+    """The LLM now and then writes one word of a Gujarati answer in English letters ("રમેશભાઈ Patel"),
+    even when told not to. When the person's words had no English letters, each such word is taken
+    from what they said instead: the word that stands next to the same neighbour there."""
+    if _LATIN.search(said) or not any(
+        isinstance(v, str) and _LATIN.search(v) for k, v in reading.values.items() if k in TEXT_FIELDS
+    ):
+        return reading
+    heard = [w.strip(_EDGE) for w in said.split()]
+    values = dict(reading.values)
+    for key in TEXT_FIELDS:
+        if isinstance(value := values.get(key), str) and _LATIN.search(value):
+            values[key] = _swap_latin_words(value.split(), heard)
+            logger.info(
+                "the LLM wrote %r in English letters; using %r from what was said", value, values[key]
+            )
+    return dataclasses.replace(reading, values=values)
+
+
+def _swap_latin_words(words: list[str], heard: list[str]) -> str:
+    anchors = [(i, heard.index(w)) for i, w in enumerate(words) if not _LATIN.search(w) and w in heard]
+    out = list(words)
+    for i, word in enumerate(words):
+        if not _LATIN.search(word) or not anchors:
+            continue
+        mine, theirs = min(anchors, key=lambda anchor: abs(anchor[0] - i))  # the nearest kept word
+        at = theirs + (i - mine)
+        if 0 <= at < len(heard) and heard[at] and not _LATIN.search(heard[at]) and heard[at] not in out:
+            out[i] = heard[at]
+    return " ".join(out)
+
+
 def asked_just_now(current: str, last_line: str) -> bool:
     """Whether the agent's last line was the current question, rather than "can you hear me?" or
     "no problem, take your time": a bare "હા" answers whichever it was."""
@@ -214,6 +287,8 @@ def asked_just_now(current: str, last_line: str) -> bool:
 
 def quick_reading(current: str, said: str) -> Reading | None:
     """A reading without the LLM, only when every word of a short answer is understood."""
+    if current == "age" and (age := age_from(said, strict=True)) is not None:
+        return Reading("answer", {"age": age}, source="rules")
     if current == "water_supply" and (comes := yes_or_no(said, strict=True)) is not None:
         return Reading("answer", {"water_supply": comes}, source="rules")
     if current == "frequency" and (days := days_from(said, strict=True)) is not None:
@@ -243,6 +318,8 @@ def fallback_reading(current: str, said: str, *, asked: bool = True) -> Reading:
         if value is not None and len(str(value).split()) > FALLBACK_MAX_WORDS:
             value = None
         key = current
+    elif current == "age":
+        value, key = age_from(said), "age"
     elif current == "water_supply":
         value, key = yes_or_no(said), "water_supply"
         if value is not None and not asked:  # "હા" to "can you hear me?"

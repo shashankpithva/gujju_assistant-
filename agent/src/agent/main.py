@@ -6,7 +6,7 @@ Run from agent/:
     uv run python -m agent.main dev              # serve calls; then `uv run python -m agent.dialer run`
 
 A call goes: dial and wait for an answer, let the person say "હેલો?", introduce the survey, ask the
-seven questions (survey/), write each answer into the sheet as it comes, say thank you, hang up.
+eight questions (survey/), write each answer into the sheet as it comes, say thank you, hang up.
 """
 
 from __future__ import annotations
@@ -52,7 +52,6 @@ from agent.survey.controls import CallControls
 from agent.survey.flow import Reply, Survey
 from agent.survey.reader import AnswerReader
 from agent.survey.recorder import SheetRecorder
-from agent.survey.script import Script
 
 if TYPE_CHECKING:
     from livekit.agents.voice.room_io.types import NoiseCancellationParams
@@ -217,7 +216,7 @@ async def entrypoint(ctx: JobContext) -> None:
     call_stamp = {"call_id": call_id, "last_call": stamp(started_at)}
     max_call_seconds = seconds("MAX_CALL_SECONDS", 240)
 
-    survey = Survey(Script.from_env())
+    survey = Survey.from_env()
     try:
         session_llm, llm_label = build_llm()
         hearing = build_hearing("phone" if request.outbound else "browser")

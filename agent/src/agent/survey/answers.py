@@ -26,6 +26,7 @@ YES, NO = "હા", "ના"
 @dataclass
 class Answers:
     name: str | None = None
+    age: int | None = None  # in years
     village: str | None = None
     taluka: str | None = None
     district: str | None = None
@@ -98,6 +99,17 @@ def clean_days(value: object) -> float | None:
     if number is None or not 0 < number <= 60:
         return None
     return max(1.0, round(number, 1))
+
+
+MAX_AGE = 120
+
+
+def clean_age(value: object) -> int | None:
+    """An age in whole years, or None when the number can't be one."""
+    number = _as_number(value)
+    if number is None or not 1 <= round(number) <= MAX_AGE:
+        return None
+    return round(number)
 
 
 def clean_minutes(value: object) -> int | None:
@@ -330,6 +342,41 @@ def minutes_from(text: str, *, strict: bool = False) -> int | None:
     return clean_minutes(total)
 
 
+# How old.
+_YEARS = {
+    "વર્ષ", "વરસ", "વર્ષની", "વર્ષનો", "વર્ષના", "વર્ષનાં", "વરસની", "વરસનો", "વરસના", "સાલ",
+    "years", "year", "yrs",
+}  # fmt: skip
+_AGE_EXTRA = {
+    "મારી", "મારે", "મને", "ઉંમર", "ઉમર", "છે", "છું", "થયા", "થયાં", "થઈ", "હું", "તો", "જી", "સાહેબ", "ભાઈ", "બેન",
+    "લગભગ", "my", "age", "is", "i", "am", "old", "about", "around",
+}  # fmt: skip
+# "એક મિનિટ" (hold on) and "બે દિવસે" carry a number that isn't an age.
+_NOT_AGE_UNITS = (
+    "મિનિટ", "મીનીટ", "મિનીટ", "કલાક", "દિવસ", "અઠવાડિ", "મહિન", "minute", "hour", "day", "week",
+)  # fmt: skip
+
+
+def age_from(text: str, *, strict: bool = False) -> int | None:
+    """How old: "45", "પિસ્તાલીસ વર્ષ", "મારી ઉંમર 62 છે". One number only: "40-45" goes to the LLM.
+
+    `strict`: every word must be one these rules know.
+    """
+    numbers = []
+    for token in _tokens(text):
+        if (n := _number(token)) is not None:
+            numbers.append(n)
+        elif token.startswith(_NOT_AGE_UNITS):
+            return None
+        elif token in _YEARS:
+            continue
+        elif strict and token not in _AGE_EXTRA:
+            return None
+    if len(numbers) != 1:
+        return None
+    return clean_age(numbers[0])
+
+
 # What else a turn can be ---------------------------------------------------------------------------
 
 _REPEAT_ASKS = {"શું", "શુ", "ફરીથી", "ફરી", "સંભળાયું", "સમજાયું", "હેં", "what", "repeat", "again", "pardon"}
@@ -354,6 +401,15 @@ def is_busy(text: str) -> bool:
     later = "પછી" in tokens and bool(tokens & {"ફોન", "કોલ", "કૉલ", "વાત"})
     no_time = bool(tokens & {"ટાઈમ", "ટાઇમ", "સમય", "time"}) and bool(tokens & {"નથી", "નહીં", "no", "not"})
     return later or no_time
+
+
+_SAYS_WRONG = {"નહીં", "નહિ", "નઈ", "ખોટું", "ખોટુ", "ખોટો", "ખોટી", "ગલત", "not", "wrong", "galat"}
+
+
+def says_its_wrong(text: str) -> bool:
+    """ "ના, ગામ ખાંભા નહીં, ખંભાળિયા", "નામ ખોટું લખ્યું": the words of a correction."""
+    tokens = _tokens(text)
+    return bool(tokens) and (tokens[0] in {"ના", "no", "na", "nahi"} or any(t in _SAYS_WRONG for t in tokens))
 
 
 def says_goodbye(text: str) -> bool:

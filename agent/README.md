@@ -1,6 +1,6 @@
 # Gujarati survey caller
 
-Phones each number in a sheet, asks about the water supply in Gujarati (name, village, taluka, district, whether water comes, how often, and for how long each day), writes every answer into the sheet as it's given, and hangs up. The full guide is [docs/agent.md](../docs/agent.md).
+Phones each number in a sheet, asks about the water supply in Gujarati (name, age, village, taluka, district, whether water comes, how often, and for how long each day), writes every answer into the sheet as it's given, and hangs up. The full guide is [docs/agent.md](../docs/agent.md).
 
 ```sh
 uv sync && uv run pytest -q                     # works with no keys

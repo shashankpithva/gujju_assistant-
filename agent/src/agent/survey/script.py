@@ -15,7 +15,9 @@ import os
 from dataclasses import dataclass
 
 # The order the survey asks in. frequency and duration are only asked when water comes.
-FIELDS: tuple[str, ...] = ("name", "village", "taluka", "district", "water_supply", "frequency", "duration")
+FIELDS: tuple[str, ...] = (
+    "name", "age", "village", "taluka", "district", "water_supply", "frequency", "duration",
+)  # fmt: skip
 PLACE_FIELDS = ("village", "taluka", "district")
 WATER_DETAILS = ("frequency", "duration")
 
@@ -25,25 +27,59 @@ class Question:
     field: str
     ask: str  # the first time
     again: str  # when the answer didn't come through: in other words, so it isn't a stuck recording
+    wrong: str  # when the answer was to another question (their name, asked their age): says what was asked
 
 
 QUESTIONS: dict[str, Question] = {
     q.field: q
     for q in (
-        Question("name", "તમારું નામ શું છે?", "માફ કરજો, નામ બરાબર સંભળાયું નહીં. ફરીથી કહેશો?"),
-        Question("village", "તમારું ગામ કયું છે?", "માફ કરજો, ગામનું નામ ફરીથી કહેશો?"),
-        Question("taluka", "તાલુકો કયો છે?", "માફ કરજો, તાલુકાનું નામ ફરીથી કહેશો?"),
-        Question("district", "અને જિલ્લો કયો છે?", "માફ કરજો, જિલ્લાનું નામ ફરીથી કહેશો?"),
-        Question("water_supply", "તમારે ત્યાં પાણી આવે છે?", "માફ કરજો, તમારે ત્યાં પાણી આવે છે, હા કે ના?"),
+        Question(
+            "name",
+            "તમારું નામ શું છે?",
+            "માફ કરજો, નામ બરાબર સંભળાયું નહીં. ફરીથી કહેશો?",
+            "માફ કરજો, મેં તમારું નામ પૂછ્યું હતું. તમારું નામ શું છે?",
+        ),
+        Question(
+            "age",
+            "તમારી ઉંમર કેટલી છે?",
+            "માફ કરજો, ઉંમર બરાબર સંભળાઈ નહીં. કેટલા વર્ષ થયા, ફરીથી કહેશો?",
+            "માફ કરજો, મેં તમારી ઉંમર પૂછી હતી. તમને કેટલા વર્ષ થયા?",
+        ),
+        Question(
+            "village",
+            "તમારું ગામ કયું છે?",
+            "માફ કરજો, ગામનું નામ ફરીથી કહેશો?",
+            "માફ કરજો, મેં તમારા ગામનું નામ પૂછ્યું હતું. તમારું ગામ કયું છે?",
+        ),
+        Question(
+            "taluka",
+            "તાલુકો કયો છે?",
+            "માફ કરજો, તાલુકાનું નામ ફરીથી કહેશો?",
+            "માફ કરજો, મેં તાલુકો પૂછ્યો હતો. તમારો તાલુકો કયો છે?",
+        ),
+        Question(
+            "district",
+            "અને જિલ્લો કયો છે?",
+            "માફ કરજો, જિલ્લાનું નામ ફરીથી કહેશો?",
+            "માફ કરજો, મેં જિલ્લો પૂછ્યો હતો. તમારો જિલ્લો કયો છે?",
+        ),
+        Question(
+            "water_supply",
+            "તમારે ત્યાં પાણી આવે છે?",
+            "માફ કરજો, તમારે ત્યાં પાણી આવે છે, હા કે ના?",
+            "માફ કરજો, મારો સવાલ પાણી વિશે હતો. તમારે ત્યાં પાણી આવે છે, હા કે ના?",
+        ),
         Question(
             "frequency",
             "પાણી કેટલા દિવસે આવે છે?",
             "માફ કરજો, પાણી રોજ આવે છે, કે કેટલા દિવસે એક વાર?",
+            "માફ કરજો, મારો સવાલ એ હતો કે પાણી રોજ આવે છે, કે કેટલા દિવસે એક વાર?",
         ),
         Question(
             "duration",
             "દિવસમાં કેટલો સમય પાણી આવે છે?",
             "માફ કરજો, પાણી આવે ત્યારે કેટલા કલાક કે કેટલી મિનિટ ચાલુ રહે છે?",
+            "માફ કરજો, મારો સવાલ એ હતો કે પાણી આવે ત્યારે કેટલો સમય ચાલુ રહે છે?",
         ),
     )
 }
@@ -64,6 +100,9 @@ DONT_KNOW = "માફ કરજો, એની મને ખબર નથી. �
 CHECK_IN = "હેલો, તમને મારો અવાજ સંભળાય છે?"
 SILENCE_GOODBYE = "લાગે છે અવાજ નથી આવતો. અમે પછી ફરી ફોન કરીશું. આવજો!"
 TIME_UP = "માફ કરજો, હવે ફોન મૂકવો પડશે. સમય આપવા બદલ આભાર. આવજો!"
+# After too many wrong or unclear answers to one question (flow.MAX_WRONG_ANSWERS). No "we'll call
+# again": the call is saved as partial, and the dialer doesn't call a partial number back.
+TOO_MANY_WRONG = "માફ કરજો, જવાબ બરાબર સમજાતો નથી, એટલે હવે ફોન મૂકું છું. સમય આપવા બદલ આભાર. આવજો!"
 DEFAULT_PURPOSE = "દરેક ગામમાં પાણી કેટલું અને ક્યારે આવે છે, એની માહિતી ભેગી કરીએ છીએ."
 
 
