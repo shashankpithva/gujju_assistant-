@@ -60,9 +60,11 @@ Put phone numbers in a column headed `Phone` (or `ફોન નંબર`, `Mobi
 |---|---|---|
 | Phone / ફોન નંબર | you | The number to call |
 | Name, Age, Village, Taluka, District, Water comes?, How often, Time per day | agent | The answers, as each one is given |
+| Every N days, Minutes per day | agent | How often and how long again, as plain numbers (`2`, `30`) for charts and averages |
 | Status | dialer, agent | Empty: not called yet. `calling` during the call, then `completed`, `partial`, `busy`, `no_answer`, `declined` or `failed` |
 | Attempts | dialer | Calls made to this number |
 | Last call | dialer, agent | When, in `SURVEY_TIMEZONE` |
+| Month | dialer, agent | The month of the last call, `2026-11`: what monthly totals group by |
 | Notes | agent | How it went: `Busy or rejected (486 Busy Here)`, `Call ended at the village question`, `Hung up after 3 wrong or unclear answers to the age question`, `Unclear: name` |
 | Call ID | agent | The call's id, as in the agent's log |
 | Transcript | agent | The whole conversation |
@@ -107,7 +109,7 @@ You get the whole survey through your microphone, and a new row in `contacts.csv
 
 ### 4. The sheet
 
-**Google Sheets** (for the demo: the answers appear as people speak). The agent signs in as a *service account*, a robot Google account:
+**Google Sheets** is the one to use: the answers appear as people speak, the whole team works from one sheet, it keeps working when the agent is deployed, and the monthly report builds on it ([below](#monthly-report-and-dashboard)). The agent signs in as a *service account*, a robot Google account:
 
 1. In the [Google Cloud console](https://console.cloud.google.com), create a project (or use one), then under APIs & Services → Library, enable the **Google Sheets API**.
 2. Under APIs & Services → Credentials, choose Create credentials → **Service account**. Give it a name, then Done.
@@ -163,6 +165,32 @@ Calls go out one at a time, with a few seconds between them. Each waits for the 
 4. `dialer call` to your own phone, with the Google Sheet open on screen: each answer appears in its row as you say it.
 5. Then `dialer run` on the demo list: people who agreed to be called.
 
+## Monthly report and dashboard
+
+**Keep the survey in a Google Sheet.** It fills in during calls, everyone sees the same numbers, it works with the agent deployed (a CSV only works on the computer running the agent), and File → Download → Microsoft Excel (.xlsx) gives an Excel copy whenever someone wants one. A CSV is for trying the survey on one computer.
+
+At the end of the month:
+
+```sh
+uv run python -m agent.report                    # this month
+uv run python -m agent.report --month 2026-11    # any month
+uv run python -m agent.report --no-write         # only print it
+```
+
+It prints the report and writes it as a tab named `Report 2026-11` at the end of the same spreadsheet (next to a CSV, as `contacts-report-2026-11.csv`, which Excel opens):
+
+| Table | What it shows |
+|---|---|
+| Calls | Numbers called that month, and how each call ended |
+| Does water come? | Yes, no, or didn't say, of the people who spoke to us |
+| How often it comes, Time per day | In groups (every day, every 2 days, ...; under an hour, ...), with the average |
+| By district, By village | People, how many get water, the average days between supply and minutes per day |
+| Age | In groups, with the average |
+
+A number counts in the month of its last call. Run it again and the tab is rewritten in place, so a chart drawn on it once (select a table, then Insert → Chart) stays and shows the new numbers.
+
+**Your own dashboard.** Age, Every N days and Minutes per day are written to the Google Sheet as numbers and Month as `2026-11`, so the contacts tab works straight away with a pivot table (Insert → Pivot table: rows District, filter Month, values the average of Minutes per day) or with [Looker Studio](https://lookerstudio.google.com) (free: add the sheet as a data source). Keep the contacts as the first tab, or set `GOOGLE_SHEET_TAB`: the agent and the dialer read the first tab.
+
 ## Deploy to LiveKit Cloud
 
 So the agent takes calls without your computer. LiveKit builds the image from [Dockerfile](../agent/Dockerfile). Put the settings in `agent/.env.production`, which git and the upload both ignore. That means everything from `.env` except the three `LIVEKIT_` values, which LiveKit sets itself. The service account key goes in as text: `GOOGLE_SERVICE_ACCOUNT_JSON` holds the key file's contents (or their base64), since a deployed agent has no file to read.
@@ -188,6 +216,7 @@ A deployed agent needs the Google Sheet: it can't see a CSV on your computer. Th
 | [survey/controls.py](../agent/src/agent/survey/controls.py) | Silence, lost words, the time limit, hanging up |
 | [survey/recorder.py](../agent/src/agent/survey/recorder.py) | Writes answers into the row in the background, during the call |
 | [sheets/](../agent/src/agent/sheets/) | Google Sheets and CSV: header detection, cells in, contacts out |
+| [report.py](../agent/src/agent/report.py) | The monthly report, written as a tab beside the contacts |
 | [main.py](../agent/src/agent/main.py) | One call: dial, wait for "હેલો?", run the survey, save the result |
 | [dialer.py](../agent/src/agent/dialer.py) | Reads the sheet and sends the agent to each number |
 | [outbound.py](../agent/src/agent/outbound.py) | The call request, the SIP dial, and what a failed dial means |

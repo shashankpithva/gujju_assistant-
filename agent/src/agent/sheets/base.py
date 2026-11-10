@@ -11,18 +11,29 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
 from agent.phone import normalize_phone
-from agent.sheets.columns import ANSWER_KEYS, HEADER_SEARCH_ROWS, Layout, complete, find_layout, new_header
+from agent.sheets.columns import (
+    ANSWER_KEYS,
+    HEADER_SEARCH_ROWS,
+    NUMBER_KEYS,
+    Layout,
+    complete,
+    find_layout,
+    new_header,
+)
 
 logger = logging.getLogger("agent.sheets")
 
 # Statuses the agent and the dialer write. A row with none is waiting for its first call.
 CALLING = "calling"
 FINAL_STATUSES = ("completed", "partial", "busy", "no_answer", "declined", "failed")
+
+Cell = str | int | float  # what a cell holds when it is written
 
 
 class SheetError(Exception):
@@ -68,6 +79,31 @@ class ContactSheet(Protocol):
 
     async def append(self, values: Mapping[str, str]) -> int: ...
 
+    async def write_tab(self, title: str, rows: list[list[Cell]]) -> str:
+        """Write a table (a report) beside the contacts, replacing one of the same title. Returns where."""
+        ...
+
+
+def typed(key: str, value: str) -> Cell:
+    """A cell as it's written: a number for the number columns ("50" -> 50, "3.5" -> 3.5), else as is."""
+    if key not in NUMBER_KEYS:
+        return value
+    try:
+        number = float(value)
+    except ValueError:
+        return value  # "(સ્પષ્ટ નથી)", or empty
+    return int(number) if number.is_integer() else number
+
+
+_STAMP = re.compile(r"^(\d{4}-\d{2})-\d{2}")
+
+
+def with_month(values: dict[str, str]) -> dict[str, str]:
+    """The Month column follows Last call: "2026-11-10 18:12" -> "2026-11"."""
+    if "month" not in values and (match := _STAMP.match(values.get("last_call", ""))):
+        return {**values, "month": match.group(1)}
+    return values
+
 
 class TableSheet:
     """A sheet as a table of strings. Backends provide the blocking methods at the bottom."""
@@ -88,6 +124,10 @@ class TableSheet:
     async def append(self, values: Mapping[str, str]) -> int:
         async with self._lock:
             return await asyncio.to_thread(self._append_values, dict(values))
+
+    async def write_tab(self, title: str, rows: list[list[Cell]]) -> str:
+        async with self._lock:
+            return await asyncio.to_thread(self._write_tab, title, rows)
 
     # Blocking, in a worker thread ---------------------------------------------------------------
 
@@ -110,7 +150,9 @@ class TableSheet:
         with self._exclusive():
             layout = self._known_layout()
             cells = [
-                (row, layout.columns[key], value) for key, value in values.items() if key in layout.columns
+                (row, layout.columns[key], typed(key, value))
+                for key, value in with_month(values).items()
+                if key in layout.columns
             ]
             if cells:
                 self._write_cells(cells)
@@ -118,10 +160,10 @@ class TableSheet:
     def _append_values(self, values: dict[str, str]) -> int:
         with self._exclusive():
             layout = self._known_layout()
-            row = [""] * layout.width
-            for key, value in values.items():
+            row: list[Cell] = [""] * layout.width
+            for key, value in with_month(values).items():
                 if key in layout.columns:
-                    row[layout.columns[key] - 1] = value
+                    row[layout.columns[key] - 1] = typed(key, value)
             return self._append_row(row)
 
     def _known_layout(self) -> Layout:
@@ -165,7 +207,7 @@ class TableSheet:
     def _read_top(self, rows: int) -> list[list[str]]:
         return self._read_all()[:rows]
 
-    def _write_cells(self, cells: list[tuple[int, int, str]]) -> None:
+    def _write_cells(self, cells: list[tuple[int, int, Cell]]) -> None:
         """Write (row, column, value) cells, 1-based, growing the sheet if needed."""
         raise NotImplementedError
 
@@ -173,8 +215,12 @@ class TableSheet:
         """Insert `header` as a new first row, moving everything down one."""
         raise NotImplementedError
 
-    def _append_row(self, values: list[str]) -> int:
+    def _append_row(self, values: list[Cell]) -> int:
         """Add a row after the last one with anything in it; returns its number."""
+        raise NotImplementedError
+
+    def _write_tab(self, title: str, rows: list[list[Cell]]) -> str:
+        """Write `rows` as a table of its own named `title`, replacing it; returns where it is."""
         raise NotImplementedError
 
 

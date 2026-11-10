@@ -87,6 +87,8 @@ def test_the_sheet_gets_every_answer_written_out(survey):
         "water_supply": "હા",
         "frequency": "એકાંતરે (દર 2 દિવસે)",
         "duration": "1 કલાક (60 મિનિટ)",
+        "days_between": "2",
+        "minutes_per_day": "60",
     }
 
 
@@ -97,6 +99,7 @@ def test_no_water_skips_how_often_and_how_long(survey):
     values = survey.sheet_values()
     assert values["water_supply"] == "ના"
     assert values["frequency"] == values["duration"] == NOT_APPLICABLE
+    assert values["days_between"] == values["minutes_per_day"] == ""
 
 
 def test_several_answers_at_once_are_all_taken(survey):

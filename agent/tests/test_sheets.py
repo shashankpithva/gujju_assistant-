@@ -210,7 +210,7 @@ async def test_google_sheet_reads_numbers_and_completes_the_header():
     contacts = await sheet.contacts()
     assert [(c.row, c.phone) for c in contacts] == [(2, "9876543210"), (4, "+919876500000")]
     assert worksheet.rows[0][:3] == ["Phone", "Name", "Age / ઉંમર"]
-    assert len(worksheet.rows[0]) == 15
+    assert len(worksheet.rows[0]) == 18
 
 
 async def test_google_sheet_writes_only_the_cells_that_changed():
@@ -227,7 +227,7 @@ async def test_google_sheet_grows_when_a_column_is_beyond_its_edge():
     sheet, worksheet = google_with([["Phone"]])
     worksheet.col_count = 5
     await sheet.contacts()
-    assert worksheet.col_count >= 15
+    assert worksheet.col_count >= 18
 
 
 async def test_google_sheet_appends_a_test_call_and_learns_its_row():
@@ -287,4 +287,82 @@ def test_every_answer_has_a_column():
         "water_supply",
         "frequency",
         "duration",
+        "days_between",
+        "minutes_per_day",
     }
+
+
+# Numbers, the month, and report tabs -----------------------------------------------------------------
+
+
+async def test_number_columns_go_to_google_as_numbers_and_the_phone_stays_text():
+    sheet, worksheet = google_with([["Phone"], ["+919876543210"]])
+    await sheet.contacts()
+    worksheet.batches.clear()
+    await sheet.update(2, {"phone": "+919876543210", "age": "50", "days_between": "3.5", "notes": "45"})
+    written = [cell["values"][0][0] for cell in worksheet.batches[0]]
+    assert 50 in written and 3.5 in written  # numbers a chart can use
+    assert "+919876543210" in written and "45" in written  # text stays text
+    await sheet.update(2, {"age": "(સ્પષ્ટ નથી)"})
+    assert worksheet.batches[-1][0]["values"] == [["(સ્પષ્ટ નથી)"]]
+
+
+async def test_the_month_follows_the_last_call(scratch):
+    path = scratch / "s.csv"
+    path.write_text("Phone\n9876543210\n", encoding="utf-8")
+    sheet = CsvSheet(path)
+    await sheet.contacts()
+    await sheet.update(2, {"last_call": "2026-11-10 18:12", "age": "50"})
+    (contact,) = await CsvSheet(path).contacts()
+    assert contact.values["month"] == "2026-11" and contact.values["age"] == "50"
+
+
+async def test_a_csv_report_is_written_beside_the_contacts(scratch):
+    sheet = CsvSheet(scratch / "contacts.csv")
+    rows = [["Calls", "People"], ["Completed", 3], [], ["Average", 2.5]]
+    where = await sheet.write_tab("Report 2026-11", rows)
+    assert where.endswith("contacts-report-2026-11.csv")
+    expected = [["Calls", "People"], ["Completed", "3"], [], ["Average", "2.5"]]
+    assert rows_of(scratch / "contacts-report-2026-11.csv") == expected
+
+
+class FakeTab:
+    def __init__(self, title: str, rows: int, cols: int) -> None:
+        self.title, self.row_count, self.col_count, self.id = title, rows, cols, 7
+        self.values: list[list] = []
+
+    def clear(self):
+        self.values = []
+
+    def resize(self, rows, cols):
+        self.row_count, self.col_count = rows, cols
+
+    def update(self, values, range_name, value_input_option=None):
+        assert range_name == "A1" and value_input_option == "RAW"
+        self.values = [list(row) for row in values]
+
+
+class FakeBook:
+    def __init__(self) -> None:
+        self.tabs: dict[str, FakeTab] = {}
+
+    def worksheet(self, title):
+        import gspread
+
+        if title not in self.tabs:
+            raise gspread.exceptions.WorksheetNotFound(title)
+        return self.tabs[title]
+
+    def add_worksheet(self, title, rows, cols):
+        self.tabs[title] = FakeTab(title, rows, cols)
+        return self.tabs[title]
+
+
+async def test_a_google_report_is_a_tab_rewritten_in_place():
+    sheet, worksheet = google_with([["Phone"]])
+    worksheet.spreadsheet = FakeBook()
+    where = await sheet.write_tab("Report 2026-11", [["Calls", "People"], ["Completed", 3]])
+    tab = worksheet.spreadsheet.tabs["Report 2026-11"]
+    assert where.endswith("#gid=7") and tab.values == [["Calls", "People"], ["Completed", 3]]
+    await sheet.write_tab("Report 2026-11", [["Calls"]])
+    assert list(worksheet.spreadsheet.tabs) == ["Report 2026-11"] and tab.values == [["Calls"]]

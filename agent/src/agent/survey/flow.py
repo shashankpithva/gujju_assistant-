@@ -267,7 +267,13 @@ class Survey:
                 values[name] = UNCLEAR
             else:
                 values[name] = ""
-        return {name: values[name] for name in FIELDS}  # in the order they're asked
+        # The same two answers as plain numbers, for the dashboard: "દર 2 દિવસે" is 2, "અડધો કલાક" 30.
+        comes = a.water_supply is not False
+        numbers = {
+            "days_between": f"{a.frequency_days:g}" if comes and a.frequency_days is not None else "",
+            "minutes_per_day": str(a.duration_minutes) if comes and a.duration_minutes is not None else "",
+        }
+        return {**{name: values[name] for name in FIELDS}, **numbers}  # in the order they're asked
 
     # Internals ----------------------------------------------------------------------------------
 

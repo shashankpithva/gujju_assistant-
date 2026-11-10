@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from agent.sheets.base import SheetError, TableSheet
+from agent.sheets.base import Cell, SheetError, TableSheet
 
 # Sheets only: the sheet is opened by its id, so the service account needs no access to Drive.
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -112,7 +112,7 @@ class GoogleSheet(TableSheet):
     def _read_top(self, rows: int) -> list[list[str]]:
         return self._call(self._worksheet().get_values, f"1:{rows}")
 
-    def _write_cells(self, cells: list[tuple[int, int, str]]) -> None:
+    def _write_cells(self, cells: list[tuple[int, int, Cell]]) -> None:
         from gspread.utils import ValueInputOption, rowcol_to_a1
 
         sheet = self._worksheet()
@@ -121,7 +121,8 @@ class GoogleSheet(TableSheet):
             self._call(sheet.add_cols, cols - sheet.col_count)
         if rows > sheet.row_count:
             self._call(sheet.add_rows, rows - sheet.row_count)
-        # RAW: "+919876543210" stays text, never a formula or a number with its + lost.
+        # RAW: "+919876543210" stays text, never a formula or a number with its + lost. The number
+        # columns come as ints and floats, and RAW keeps those numbers.
         data = [{"range": rowcol_to_a1(r, c), "values": [[v]]} for r, c, v in cells]
         self._call(sheet.batch_update, data, value_input_option=ValueInputOption.raw)
 
@@ -130,7 +131,7 @@ class GoogleSheet(TableSheet):
 
         self._call(self._worksheet().insert_row, header, index=1, value_input_option=ValueInputOption.raw)
 
-    def _append_row(self, values: list[str]) -> int:
+    def _append_row(self, values: list[Cell]) -> int:
         from gspread.utils import ValueInputOption
 
         result = self._call(
@@ -141,3 +142,22 @@ class GoogleSheet(TableSheet):
         if not match:
             raise SheetError(f"Google didn't say where the new row went ({updated!r})")
         return int(match.group(1))
+
+    def _write_tab(self, title: str, rows: list[list[Cell]]) -> str:
+        """A tab in the same spreadsheet, added at the end so the contacts stay the first tab. Run
+        again, it's cleared and rewritten in place, so charts drawn on it keep working."""
+        import gspread
+        from gspread.utils import ValueInputOption
+
+        book = self._worksheet().spreadsheet
+        width = max((len(row) for row in rows), default=1)
+        try:
+            tab = book.worksheet(title)
+            self._call(tab.clear)
+            if tab.row_count < len(rows) or tab.col_count < width:
+                self._call(tab.resize, max(tab.row_count, len(rows)), max(tab.col_count, width))
+        except gspread.exceptions.WorksheetNotFound:
+            tab = self._call(book.add_worksheet, title, rows=len(rows) + 20, cols=max(width, 8))
+        table = [list(row) + [""] * (width - len(row)) for row in rows]
+        self._call(tab.update, table, "A1", value_input_option=ValueInputOption.raw)
+        return f"{self.url}#gid={tab.id}"

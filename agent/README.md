@@ -12,4 +12,5 @@ uv run python -m agent.dialer check             # is everything ready for real c
 uv run python -m agent.main dev                 # terminal 1: the agent, waiting for calls
 uv run python -m agent.dialer call +91...       # terminal 2: call one number (yours first)
 uv run python -m agent.dialer run               # terminal 2: call everyone in the sheet
+uv run python -m agent.report                   # end of the month: the report, as a tab in the sheet
 ```

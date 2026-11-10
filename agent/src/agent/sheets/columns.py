@@ -61,15 +61,26 @@ COLUMNS: tuple[Column, ...] = (
         "Time per day / દિવસમાં કેટલો સમય",
         ("time per day", "duration", "hours per day", "ketlo samay", "દિવસમાં કેટલો સમય", "કેટલો સમય"),
     ),
+    # The same two answers as plain numbers, for charts and averages: the Gujarati columns above say
+    # "એકાંતરે (દર 2 દિવસે)", which a spreadsheet can't add up.
+    Column("days_between", "Every N days / દર કેટલા દિવસે", ("every n days", "days between", "days")),
+    Column("minutes_per_day", "Minutes per day / દિવસમાં મિનિટ", ("minutes per day", "minutes")),
     Column("status", "Status", ("status", "call status", "સ્થિતિ")),
     Column("attempts", "Attempts", ("attempts", "tries", "calls made")),
     Column("last_call", "Last call", ("last call", "last called", "called at", "call time")),
+    Column("month", "Month", ("month", "મહિનો")),  # of the last call, "2026-11": for monthly totals
     Column("notes", "Notes", ("notes", "note", "remarks", "નોંધ")),
     Column("call_id", "Call ID", ("call id", "call_id")),
     Column("transcript", "Transcript", ("transcript", "conversation", "વાતચીત")),
 )
 KEYS: tuple[str, ...] = tuple(c.key for c in COLUMNS)
-ANSWER_KEYS = ("name", "age", "village", "taluka", "district", "water_supply", "frequency", "duration")
+ANSWER_KEYS = (
+    "name", "age", "village", "taluka", "district", "water_supply", "frequency", "duration", "days_between",
+    "minutes_per_day",
+)  # fmt: skip
+# Written as numbers, not text, so a Google Sheet can chart and average them (a CSV has no types:
+# Excel reads numbers by itself).
+NUMBER_KEYS = ("age", "days_between", "minutes_per_day", "attempts")
 
 
 def _normal(text: str) -> str:
