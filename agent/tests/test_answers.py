@@ -8,6 +8,7 @@ from agent.survey.answers import (
     clean_minutes,
     clean_note,
     clean_text,
+    confirmation,
     days_from,
     duration_text,
     frequency_text,
@@ -193,3 +194,21 @@ def test_busy(said):
 def test_goodbyes():
     assert says_goodbye("આવજો") and says_goodbye("ચાલો ફોન મૂકું છું") and says_goodbye("ok bye")
     assert not says_goodbye("આવે છે") and not says_goodbye("ફોન નંબર")
+
+
+@pytest.mark.parametrize(
+    ("said", "yes", "rest"),
+    [
+        ("હા", True, ""),
+        ("હા જી, બરાબર છે", True, ""),
+        ("ઓકે", True, ""),
+        ("ના", False, ""),
+        ("ના ના, ખોટું", False, ""),
+        ("ના, ખંભાળિયા", False, "ખંભાળિયા"),
+        ("હા ખાંભા", True, "ખાંભા"),
+        ("ખાંભા", None, "ખાંભા"),
+        ("હા, ના", None, ""),
+    ],
+)
+def test_yes_or_no_to_a_place_read_back(said, yes, rest):
+    assert confirmation(said) == (yes, rest)

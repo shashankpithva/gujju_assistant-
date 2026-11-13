@@ -4,8 +4,16 @@ import asyncio
 
 import pytest
 
+from agent.places import gujarat
 from agent.survey.flow import Reading, Survey
-from agent.survey.reader import AnswerReader, asked_just_now, describe_turn, fallback_reading, reading_from
+from agent.survey.reader import (
+    AnswerReader,
+    asked_just_now,
+    describe_turn,
+    fallback_reading,
+    read_back_just_now,
+    reading_from,
+)
 from agent.survey.script import CHECK_IN, QUESTIONS
 from tests.conftest import ScriptedLLM
 
@@ -134,3 +142,66 @@ async def test_reading_takes_no_longer_than_its_timeout():
     started = asyncio.get_running_loop().time()
     await AnswerReader(model, timeout=0.1).read(at("name"), "રમેશ")
     assert asyncio.get_running_loop().time() - started < 1
+
+
+# A place read back for a yes ---------------------------------------------------------------------
+
+
+def read_back(village: str = "ખાંભા") -> Survey:
+    """A survey that has just asked "તમારું ગામ ખાંભા, બરાબર?"."""
+    survey = Survey(places=gujarat())
+    survey.opening()
+    survey.respond(Reading("answer", {"name": "રમેશ"}))
+    survey.respond(Reading("answer", {"village": village}))
+    assert survey.confirming
+    return survey
+
+
+@pytest.mark.parametrize(
+    ("said", "yes"), [("હા", True), ("હા, બરાબર", True), ("ના", False), ("ના જી, ખોટું", False)]
+)
+async def test_a_plain_yes_or_no_to_a_place_skips_the_llm(said, yes):
+    model = ScriptedLLM()
+    survey = read_back()
+    reading = await AnswerReader(model).read(survey, said, last_line=survey.confirmation)
+    assert reading == Reading("answer", source="rules", confirm=yes)
+    assert model.requests == []
+
+
+async def test_a_no_with_a_name_goes_to_the_llm():
+    model = ScriptedLLM(
+        {"ના, ધારી": {"intent": "answer", "confirm": "no", "village": "ધારી", "village_en": "Dhari"}}
+    )
+    survey = read_back()
+    reading = await AnswerReader(model).read(survey, "ના, ધારી", last_line=survey.confirmation)
+    assert reading.confirm is False and reading.values == {"village": "ધારી", "village_en": "Dhari"}
+    prompt = model.requests[0].items[-1].text_content
+    assert 'Read back for a yes or no: village ખાંભા ("તમારું ગામ ખાંભા, બરાબર?")' in prompt
+
+
+async def test_yes_to_can_you_hear_me_is_not_yes_to_the_place():
+    # After the silence check-in, "હા" means "I can hear you", not "Khambha is right".
+    model = ScriptedLLM({"હા": {"intent": "acknowledge", "confirm": "yes"}})  # even if the LLM thinks so
+    survey = read_back()
+    reading = await AnswerReader(model).read(survey, "હા", last_line=CHECK_IN)
+    assert reading.confirm is None and len(model.requests) == 1
+    assert not read_back_just_now(survey, CHECK_IN) and read_back_just_now(survey, survey.confirmation)
+    assert "Read back for a yes or no" not in model.requests[0].items[-1].text_content
+
+
+async def test_without_the_llm_a_place_is_still_confirmed():
+    reader = AnswerReader(ScriptedLLM(fail=True))
+    survey = read_back()
+    no = await reader.read(survey, "ના ના, ધારી", last_line=survey.confirmation)
+    assert (no.confirm, no.values) == (False, {"village": "ધારી"})
+    again = await reader.read(survey, "ખાંભા", last_line=survey.confirmation)  # the name again: a yes
+    assert (again.confirm, again.values) == (None, {"village": "ખાંભા"})
+    assert (await reader.read(survey, "અમમ", last_line=survey.confirmation)).values == {"village": "અમમ"}
+    assert fallback_reading("village", "", confirming="village").intent == "unclear"
+
+
+def test_the_llm_may_give_a_yes_a_no_and_english_spellings():
+    reading = reading_from({"intent": "answer", "confirm": "yes"})
+    assert reading.intent == "answer" and reading.confirm is True and reading.values == {}
+    reading = reading_from({"intent": "answer", "taluka": "ધારી", "taluka_en": " Dhari ", "confirm": "maybe"})
+    assert reading.values == {"taluka": "ધારી", "taluka_en": "Dhari"} and reading.confirm is None

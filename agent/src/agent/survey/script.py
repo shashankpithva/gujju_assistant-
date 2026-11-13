@@ -25,15 +25,31 @@ class Question:
     field: str
     ask: str  # the first time
     again: str  # when the answer didn't come through: in other words, so it isn't a stuck recording
+    unlisted: str = ""  # a place that isn't in the list of Gujarat's places (places/gazetteer.py)
 
 
 QUESTIONS: dict[str, Question] = {
     q.field: q
     for q in (
         Question("name", "તમારું નામ શું છે?", "માફ કરજો, નામ બરાબર સંભળાયું નહીં. ફરીથી કહેશો?"),
-        Question("village", "તમારું ગામ કયું છે?", "માફ કરજો, ગામનું નામ ફરીથી કહેશો?"),
-        Question("taluka", "તાલુકો કયો છે?", "માફ કરજો, તાલુકાનું નામ ફરીથી કહેશો?"),
-        Question("district", "અને જિલ્લો કયો છે?", "માફ કરજો, જિલ્લાનું નામ ફરીથી કહેશો?"),
+        Question(
+            "village",
+            "તમારું ગામ કે શહેર કયું છે?",
+            "માફ કરજો, ગામ કે શહેરનું નામ ફરીથી કહેશો?",
+            "માફ કરજો, આ નામ મારી યાદીમાં નથી. ગામ કે શહેરનું નામ ફરીથી કહેશો?",
+        ),
+        Question(
+            "taluka",
+            "તાલુકો કયો છે?",
+            "માફ કરજો, તાલુકાનું નામ ફરીથી કહેશો?",
+            "માફ કરજો, આ નામ મારી યાદીમાં નથી. તાલુકાનું નામ ફરીથી કહેશો?",
+        ),
+        Question(
+            "district",
+            "અને જિલ્લો કયો છે?",
+            "માફ કરજો, જિલ્લાનું નામ ફરીથી કહેશો?",
+            "માફ કરજો, આ નામ મારી યાદીમાં નથી. જિલ્લાનું નામ ફરીથી કહેશો?",
+        ),
         Question("water_supply", "તમારે ત્યાં પાણી આવે છે?", "માફ કરજો, તમારે ત્યાં પાણી આવે છે, હા કે ના?"),
         Question(
             "frequency",
@@ -47,6 +63,20 @@ QUESTIONS: dict[str, Question] = {
         ),
     )
 }
+
+# A place is read back for a yes before it goes in the sheet. "{}" is its name: the person's own
+# words, or the list's name when theirs were another name for it ("Baroda" is read back "વડોદરા").
+CONFIRM_PLACE = {
+    "village": "તમારું ગામ {}, બરાબર?",
+    "city": "તમારું શહેર {}, બરાબર?",
+    "taluka": "{} તાલુકો, બરાબર?",
+    "district": "{} જિલ્લો, બરાબર?",
+}
+# Several places said at once are read back at once: "ખાંભા ગામ, ખાંભા તાલુકો અને અમરેલી જિલ્લો, બરાબર?"
+PLACE_PHRASES = {"village": "{} ગામ", "city": "{} શહેર", "taluka": "{} તાલુકો", "district": "{} જિલ્લો"}
+CONFIRM_SEVERAL = "{}, બરાબર?"
+# After their yes, before the next question: the name has just been said twice, so not again.
+CONFIRMED = {"village": "સરસ.", "taluka": "ઠીક છે.", "district": "સારું."}
 
 # Said before the first water question, so the change of subject doesn't come out of nowhere.
 TO_WATER = "હવે પાણી વિશે પૂછું."

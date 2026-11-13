@@ -11,12 +11,20 @@ CONSTANT_LINES = [
     for name, value in vars(script).items()
     if name.isupper() and isinstance(value, str) and any("઀" <= ch <= "૿" for ch in value)
 ]
-QUESTION_LINES = [line for q in QUESTIONS.values() for line in (q.ask, q.again)]
+QUESTION_LINES = [line for q in QUESTIONS.values() for line in (q.ask, q.again, q.unlisted) if line]
+# Lines built around a place's name.
+PLACE_LINES = [
+    *(line.format("ખાંભા") for line in script.CONFIRM_PLACE.values()),
+    script.CONFIRM_SEVERAL.format(
+        ", ".join(phrase.format("ખાંભા") for phrase in script.PLACE_PHRASES.values())
+    ),
+    *(f"{ack} {QUESTIONS['taluka'].ask}" for ack in script.CONFIRMED.values()),
+]
 SCRIPTS = [Script(), Script(org="ગ્રામ પંચાયત"), Script(org="જળ સેવા ટ્રસ્ટ")]
 SCRIPT_LINES = [line for s in SCRIPTS for line in (s.intro(), s.who(), s.why())]
 
 
-@pytest.mark.parametrize("line", CONSTANT_LINES + QUESTION_LINES + SCRIPT_LINES)
+@pytest.mark.parametrize("line", CONSTANT_LINES + QUESTION_LINES + SCRIPT_LINES + PLACE_LINES)
 @pytest.mark.parametrize("gender", ["male", "female"])
 def test_every_line_sounds_spoken_and_fits_either_voice(line, gender):
     # Bookish words, તું, passives, two questions in one line, stray English, and verbs that would
@@ -28,6 +36,12 @@ def test_each_question_is_one_question():
     for question in QUESTIONS.values():
         assert question.ask.endswith("?") and question.again.endswith("?")
         assert question.ask != question.again
+
+
+def test_every_place_question_says_when_a_name_isnt_in_the_list():
+    for field in script.PLACE_FIELDS:
+        assert QUESTIONS[field].unlisted.endswith("?") and "યાદી" in QUESTIONS[field].unlisted
+    assert all(line.endswith("બરાબર?") for line in script.CONFIRM_PLACE.values())
 
 
 def test_the_introduction_says_who_it_is_and_that_its_an_ai():

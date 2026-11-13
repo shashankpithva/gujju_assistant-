@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 from livekit.agents import llm
@@ -26,13 +27,14 @@ from agent.survey.answers import (
     clean_minutes,
     clean_note,
     clean_text,
+    confirmation,
     days_from,
     is_busy,
     minutes_from,
     says_goodbye,
     yes_or_no,
 )
-from agent.survey.flow import INTENTS, TEXT_FIELDS, Reading, Survey
+from agent.survey.flow import INTENTS, SPELLING_KEYS, TEXT_FIELDS, Reading, Survey
 from agent.survey.script import FIELDS, QUESTIONS
 
 logger = logging.getLogger("agent.survey.reader")
@@ -46,12 +48,17 @@ You read one turn of a phone survey in Gujarat and record it with the record_ans
 
 The survey asks these, in this order:
 - name: the person's name.
-- village: their village or town (ગામ).
+- village: their village, town or city (ગામ કે શહેર).
 - taluka: their taluka (તાલુકો).
 - district: their district (જિલ્લો).
 - water_supply: does water come to them? yes or no.
 - frequency_days: every how many days water comes. 1 = every day (રોજ), 2 = alternate days (એકાંતરે), 3 = every third day, 7 = once a week, 3.5 = twice a week.
 - duration_minutes: on a day it comes, how long water runs, in minutes. અડધો કલાક = 30, પોણો કલાક = 45, એક કલાક = 60, દોઢ કલાક = 90, અઢી કલાક = 150. A time range: "સવારે 6 થી 8" = 120.
+
+Each village, taluka and district is read back for a yes before it's written down ("ખાંભા તાલુકો, બરાબર?"). When the agent's last words were such a read-back, set confirm:
+- yes: they agree ("હા", "બરાબર", "હા, એ જ", "સાચું").
+- no: they don't ("ના", "ખોટું", "એ નહીં"). If they give the right name ("ના, ખંભાળિયા"), record it too, in the field read back.
+Leave confirm out at any other time.
 
 The words come from speech recognition: expect Gujarati, Hindi or English words in either script, Kathiawadi, Surti or other local speech, and recognition mistakes.
 
@@ -59,6 +66,7 @@ Rules:
 - Record only what the person actually said. Never guess, and never fill a field from general knowledge (don't add a district because you know where a village is).
 - They usually answer the question just asked, but may answer several at once, or correct an earlier answer ("ના, ગામ ખાંભા છે"): record those too.
 - Write names and places in Gujarati script, spelled as commonly written ("ભાવનગર", "રાજકોટ"), without filler such as "મારું નામ", "ગામ" or "છે". Keep ભાઈ or બેન if they said it.
+- With a village, taluka or district, also give it in English letters (village_en, taluka_en, district_en), spelled as it usually is in English ("Khambha", "Dhrangadhra"). Spell the place they said; never swap in another one.
 - When how often or how long isn't a plain number ("ક્યારેક", "નક્કી નહીં"), put their words in frequency_note or duration_note.
 - "એક મિનિટ" or "બે મિનિટ" on its own usually means "hold on" (intent wait), not a duration.
 - When the agent's last words weren't the question (for example "હેલો, તમને મારો અવાજ સંભળાય છે?"), a bare "હા" answers those words: intent acknowledge, not an answer to the question.
@@ -78,8 +86,11 @@ Examples (question asked: what they said -> what to record):
 - name: "હા બોલો" -> intent acknowledge
 - name: "મારું નામ રમેશભાઈ પટેલ" -> answer, name "રમેશભાઈ પટેલ"
 - name: "Ramesh" -> answer, name "રમેશ"
-- village: "ખાંભા, તાલુકો ખાંભા ને જિલ્લો અમરેલી" -> answer, village "ખાંભા", taluka "ખાંભા", district "અમરેલી"
-- taluka: "ના ના, ગામ ખાંભા નહીં, ખંભાળિયા" -> answer, village "ખંભાળિયા"
+- village: "અમારું ગામ ખાંભા" -> answer, village "ખાંભા", village_en "Khambha"
+- village: "ખાંભા, તાલુકો ખાંભા ને જિલ્લો અમરેલી" -> answer, village "ખાંભા", taluka "ખાંભા", district "અમરેલી", with village_en "Khambha", taluka_en "Khambha", district_en "Amreli"
+- taluka: "ના ના, ગામ ખાંભા નહીં, ખંભાળિયા" -> answer, village "ખંભાળિયા", village_en "Khambhalia"
+- read back "તમારું ગામ ખાંભા, બરાબર?": "હા, બરાબર" -> answer, confirm yes
+- read back "ખાંભા તાલુકો, બરાબર?": "ના ના, ધારી" -> answer, confirm no, taluka "ધારી", taluka_en "Dhari"
 - water_supply: "હા, આવે છે ને રોજ સવારે" -> answer, water_supply yes, frequency_days 1
 - water_supply: "ક્યારેક આવે, ક્યારેક નહીં" -> answer, water_supply yes, frequency_note "ક્યારેક આવે, ક્યારેક નહીં"
 - frequency_days: "ત્રણ દિવસે એક વાર" -> answer, frequency_days 3
@@ -101,10 +112,18 @@ RECORD_ANSWER = {
                 "enum": ["who", "why", "other"],
                 "description": "Only for intent question.",
             },
+            "confirm": {
+                "type": "string",
+                "enum": ["yes", "no"],
+                "description": "Only right after a place was read back: is it right?",
+            },
             "name": {"type": "string", "description": "The person's name, in Gujarati script."},
-            "village": {"type": "string", "description": "Their village or town, in Gujarati script."},
+            "village": {"type": "string", "description": "Their village, town or city, in Gujarati script."},
+            "village_en": {"type": "string", "description": "The same village in English letters."},
             "taluka": {"type": "string", "description": "Their taluka, in Gujarati script."},
+            "taluka_en": {"type": "string", "description": "The same taluka in English letters."},
             "district": {"type": "string", "description": "Their district, in Gujarati script."},
+            "district_en": {"type": "string", "description": "The same district in English letters."},
             "water_supply": {"type": "string", "enum": ["yes", "no"], "description": "Does water come?"},
             "frequency_days": {"type": "number", "description": "Every how many days water comes."},
             "frequency_note": {"type": "string", "description": "Their words, if not a number of days."},
@@ -132,15 +151,27 @@ class AnswerReader:
     async def read(self, survey: Survey, said: str, *, last_line: str = "") -> Reading:
         """What `said` (everything the caller said since the agent last spoke) means for the survey."""
         current = survey.asked or FIELDS[0]
-        asked = asked_just_now(current, last_line)
-        if asked and (quick := quick_reading(current, said)) is not None:
-            return quick
+        if survey.confirming:
+            asked = read_back_just_now(survey, last_line)
+            yes, rest = confirmation(said)
+            if asked and yes is not None and not rest:  # a plain "હા" or "ના" to the place read back
+                return Reading("answer", source="rules", confirm=yes)
+        else:
+            asked = asked_just_now(current, last_line)
+            if asked and (quick := quick_reading(current, said)) is not None:
+                return quick
+        reading: Reading | None = None
         if self._llm is not None:
             try:
-                return await asyncio.wait_for(self._ask_llm(survey, said, last_line), self._timeout)
+                reading = await asyncio.wait_for(self._ask_llm(survey, said, last_line), self._timeout)
             except Exception as e:  # any failure: the rules below keep the call going
                 logger.warning("the LLM couldn't read the answer, using the rules instead: %r", e)
-        return fallback_reading(current, said, asked=asked)
+        if reading is None:
+            confirming = next(iter(survey.pending), None) if survey.confirming else None
+            reading = fallback_reading(current, said, asked=asked, confirming=confirming)
+        if reading.confirm is not None and not (survey.confirming and asked):
+            reading = replace(reading, confirm=None)  # a "હા" to "can you hear me?", not to the place
+        return reading
 
     async def _ask_llm(self, survey: Survey, said: str, last_line: str) -> Reading:
         ctx = llm.ChatContext()
@@ -165,8 +196,13 @@ def describe_turn(survey: Survey, said: str, last_line: str) -> str:
         for name, value in survey.sheet_values().items()
         if value and name in FIELDS
     ]
+    read_back = ""
+    if survey.confirming and read_back_just_now(survey, last_line):
+        heard = ", ".join(f"{name} {spoken}" for name, spoken in survey.pending.items())
+        read_back = f'Read back for a yes or no: {heard} ("{survey.confirmation}")'
     lines = [
         f'Question just asked: {_FIELD_KEY.get(current, current)} ("{QUESTIONS[current].ask}")',
+        read_back,
         f'The agent\'s last words: "{last_line}"' if last_line else "",
         f"Answers so far: {'; '.join(known) if known else 'none'}",
         f'What the person said: "{" ".join(said.split())}"',
@@ -179,7 +215,7 @@ def reading_from(arguments: dict[str, Any]) -> Reading:
     intent = arguments.get("intent")
     intent = intent if intent in INTENTS else "unclear"
     values: dict[str, object] = {}
-    for name in TEXT_FIELDS:
+    for name in (*TEXT_FIELDS, *SPELLING_KEYS.values()):
         if (text := clean_text(arguments.get(name))) is not None:
             values[name] = text
     water = arguments.get("water_supply")
@@ -195,14 +231,15 @@ def reading_from(arguments: dict[str, Any]) -> Reading:
         values["duration_minutes"] = minutes
     elif (note := clean_note(arguments.get("duration_note"))) is not None:
         values["duration_note"] = note
-    if intent == "answer" and not values:
+    confirm = {"yes": True, "no": False, True: True, False: False}.get(arguments.get("confirm"))  # type: ignore[arg-type]
+    if intent == "answer" and not values and confirm is None:
         intent = "unclear"  # "answered", but nothing usable came with it
     asked_about = arguments.get("asked_about")
     if intent == "question":
         asked_about = asked_about if asked_about in ("who", "why", "other") else "other"
     else:
         asked_about = None
-    return Reading(intent, values, asked_about, source="llm")  # type: ignore[arg-type]
+    return Reading(intent, values, asked_about, source="llm", confirm=confirm)  # type: ignore[arg-type]
 
 
 def asked_just_now(current: str, last_line: str) -> bool:
@@ -210,6 +247,11 @@ def asked_just_now(current: str, last_line: str) -> bool:
     "no problem, take your time": a bare "હા" answers whichever it was."""
     question = QUESTIONS[current]
     return not last_line or question.ask in last_line or question.again in last_line
+
+
+def read_back_just_now(survey: Survey, last_line: str) -> bool:
+    """Whether the agent's last line read the places back: only then is a bare "હા" a yes to them."""
+    return not last_line or survey.confirmation in last_line
 
 
 def quick_reading(current: str, said: str) -> Reading | None:
@@ -227,8 +269,11 @@ def quick_reading(current: str, said: str) -> Reading | None:
 FALLBACK_MAX_WORDS = 3
 
 
-def fallback_reading(current: str, said: str, *, asked: bool = True) -> Reading:
-    """The best the rules can do with any answer, for when the LLM isn't there."""
+def fallback_reading(
+    current: str, said: str, *, asked: bool = True, confirming: str | None = None
+) -> Reading:
+    """The best the rules can do with any answer, for when the LLM isn't there. `confirming` is the
+    place just read back, if one was: then "ના, ખંભાળિયા" is a no, and the right name."""
     if not said.strip():
         return Reading("unclear", source="fallback")
     if says_goodbye(said):
@@ -237,6 +282,13 @@ def fallback_reading(current: str, said: str, *, asked: bool = True) -> Reading:
         return Reading("busy", source="fallback")
     if asks_to_repeat(said):
         return Reading("repeat", source="fallback")
+    if confirming is not None:
+        yes, rest = confirmation(said)
+        place = clean_text(rest)
+        values = {confirming: place} if place and len(place.split()) <= FALLBACK_MAX_WORDS else {}
+        if yes is None and not values:
+            return Reading("unclear", source="fallback")
+        return Reading("answer", values, source="fallback", confirm=yes)
     value: object | None
     if current in TEXT_FIELDS:
         value = clean_text(said)

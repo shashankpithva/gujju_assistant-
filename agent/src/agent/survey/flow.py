@@ -3,6 +3,9 @@
 One caller turn goes in (a Reading, from reader.py) and one line comes out (a Reply). The flow, not
 the LLM, decides what that line is, so every reply is one of the script's lines (script.py):
 - an answer moves on to the next question, saying back what was heard so a mistake is caught;
+- a village, taluka or district is looked up in the list of Gujarat's places (places/), read back
+  ("ખાંભા તાલુકો, બરાબર?") and written down only once the person says yes. A name that isn't in the
+  list is asked for again, and never written down;
 - an answer to a later question, or a correction to an earlier one, is taken wherever it's given;
 - "શું?" repeats the question, "who is this?" gets an answer and then the question again;
 - an unclear answer is asked again in other words, and after three tries the survey moves on, so a
@@ -13,9 +16,11 @@ the LLM, decides what that line is, so every reply is one of the script's lines 
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
-from typing import Literal
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Literal
 
+from agent.places.keys import keys
 from agent.survey.answers import (
     NOT_APPLICABLE,
     UNCLEAR,
@@ -27,6 +32,9 @@ from agent.survey.answers import (
 from agent.survey.script import (
     BUSY,
     CHECK_IN,
+    CONFIRM_PLACE,
+    CONFIRM_SEVERAL,
+    CONFIRMED,
     DECLINED,
     DONT_KNOW,
     EARLY_GOODBYE,
@@ -34,6 +42,8 @@ from agent.survey.script import (
     MOVE_ON,
     NO_WATER,
     ONCE_MORE,
+    PLACE_FIELDS,
+    PLACE_PHRASES,
     QUESTIONS,
     RECORDED,
     THANKS,
@@ -42,6 +52,9 @@ from agent.survey.script import (
     WATER_DETAILS,
     Script,
 )
+
+if TYPE_CHECKING:
+    from agent.places.gazetteer import Gazetteer, Match
 
 Intent = Literal[
     "answer", "unclear", "repeat", "question", "acknowledge", "wait", "busy", "refuse", "goodbye"
@@ -54,8 +67,11 @@ Status = Literal["completed", "partial", "busy", "declined", "no_answer"]
 
 # Answers fields a Reading may carry, as cleaned values (reader.py does the cleaning).
 TEXT_FIELDS = ("name", "village", "taluka", "district")
+# A place in English letters, as the LLM spells it: one more way to find it in the list.
+SPELLING_KEYS = {"village": "village_en", "taluka": "taluka_en", "district": "district_en"}
 VALUE_KEYS = (
-    *TEXT_FIELDS, "water_supply", "frequency_days", "frequency_note", "duration_minutes", "duration_note",
+    *TEXT_FIELDS, *SPELLING_KEYS.values(), "water_supply", "frequency_days", "frequency_note",
+    "duration_minutes", "duration_note",
 )  # fmt: skip
 
 NOTE_LABELS = {
@@ -63,7 +79,9 @@ NOTE_LABELS = {
     "water_supply": "water supply", "frequency": "how often", "duration": "time per day",
 }  # fmt: skip
 
-MAX_RETRIES = 2  # an unclear answer gets the question again twice; the third time the survey moves on
+# An unclear answer, a place that isn't in the list, or a "no" to a place read back gets the question
+# again twice; the third time the survey moves on.
+MAX_RETRIES = 2
 MAX_TURNS = 5  # turns on one question, whatever was said, before moving on
 
 
@@ -75,6 +93,7 @@ class Reading:
     values: dict[str, object] = field(default_factory=dict)  # keys from VALUE_KEYS
     asked_about: AskedAbout | None = None  # for intent "question"
     source: Literal["llm", "rules", "fallback"] = "llm"
+    confirm: bool | None = None  # to a place read back ("ખાંભા તાલુકો, બરાબર?"): yes, no, or neither
 
 
 @dataclass(frozen=True)
@@ -84,9 +103,46 @@ class Reply:
     changed: tuple[str, ...] = ()  # survey fields whose answer changed this turn
 
 
+@dataclass(frozen=True)
+class HeardPlace:
+    """A place the person named, found in the list, and read back for their yes."""
+
+    field: str  # "village", "taluka" or "district"
+    sheet: str  # what the sheet gets once they say yes: "ખાંભા (Khambha)"
+    spoken: str  # what's read back: their words, or the list's name in Gujarati
+    match: Match | None = None  # where it is in the list; None when there's no list to check against
+    city: bool = False  # a town or city, to the village question: "તમારું શહેર ..."
+
+    def sounds_like(self, said: Sequence[str]) -> bool:
+        """Whether they've said this place again, by any name it was found by."""
+        names = [self.spoken]
+        if self.match is not None:
+            names += [self.match.heard, self.match.place.name, self.match.place.gujarati or ""]
+        ours = set().union(*(keys(n) for n in names if n))
+        return any(keys(s) & ours for s in said)
+
+
+@dataclass
+class _PlaceTurn:
+    """What a turn did to the places: confirmed, turned down, not found in the list, or newly heard."""
+
+    confirmed: list[str] = field(default_factory=list)  # read back and agreed to: in the answers now
+    refined: list[str] = field(default_factory=list)  # confirmed before, now pinned to the right place
+    rejected: str | None = None  # read back and turned down: asked for again
+    unlisted: list[str] = field(default_factory=list)  # named, but nothing in the list sounds like it
+    heard: list[str] = field(default_factory=list)  # named and found: read back next
+
+    @property
+    def progress(self) -> bool:
+        return bool(self.confirmed or self.rejected or self.unlisted or self.heard)
+
+
 class Survey:
-    def __init__(self, script: Script | None = None) -> None:
+    def __init__(self, script: Script | None = None, *, places: Gazetteer | None = None) -> None:
         self.script = script or Script()
+        # Gujarat's places, to check a village, taluka or district against; None takes any name, as
+        # heard (and still reads it back for a yes).
+        self.places = places
         self.answers = Answers()
         self.asked: str | None = None  # the field whose question was asked last
         self.skipped: set[str] = set()  # asked MAX_RETRIES + 1 times without a usable answer
@@ -98,6 +154,22 @@ class Survey:
         self._reasks: Counter[str] = Counter()  # times a question was asked again, for any reason
         self._turns: Counter[str] = Counter()
         self._told_about_water = False
+        self._pending: dict[str, HeardPlace] = {}  # heard and found, waiting for a yes
+        self._confirmed: dict[str, HeardPlace] = {}  # agreed to: these are in the answers
+        self._unlisted: dict[str, str] = {}  # the last name heard for a place that isn't in the list
+        self._told_unlisted: set[str] = set()
+        self._confirming = False  # the last line read places back and asked "બરાબર?"
+        self.confirmation = ""  # that line's question
+
+    @property
+    def confirming(self) -> bool:
+        """The last line read places back, and they're still waiting for a yes or no."""
+        return self._confirming and bool(self._pending)
+
+    @property
+    def pending(self) -> dict[str, str]:
+        """Places heard but not confirmed yet, and the name each is read back as."""
+        return {f: self._pending[f].spoken for f in PLACE_FIELDS if f in self._pending}
 
     @property
     def finished(self) -> bool:
@@ -119,43 +191,59 @@ class Survey:
             return Reply("", end=True)
         self.spoke = True
         self.waiting = reading.intent == "wait"
-        changed = self._apply(reading.values)
+        confirming, self._confirming = self.confirming, False
+        changed = set(self._apply(reading.values))
+        places = self._hear_places(reading, confirming)
+        changed.update(places.confirmed, places.refined)
+        for name in changed:
+            self.skipped.discard(name)
+        done = tuple(f for f in FIELDS if f in changed)
         if reading.intent == "busy":
-            return self._finish("busy", BUSY, changed)
+            return self._finish("busy", BUSY, done)
         if reading.intent == "refuse":
-            return self._finish("declined", DECLINED, changed)
+            return self._finish("declined", DECLINED, done)
         if reading.intent == "goodbye":
-            return self._finish(self._status_when_cut_short(), EARLY_GOODBYE, changed)
+            return self._finish(self._status_when_cut_short(), EARLY_GOODBYE, done)
 
         current = self.asked or FIELDS[0]
-        upcoming = self._next()
         # "Who is this? I'm Ramesh": the question gets its answer whatever else the turn did.
         reply_to = self._answer(reading.asked_about) if reading.intent == "question" else ""
+        lead = _join(reply_to, self._ack(done, places.confirmed))
+        if places.rejected:  # "ના" to a place read back
+            return self._ask_for_place(places.rejected, lead, done)
+        if current in places.unlisted and current not in self._pending:
+            return self._ask_for_place(current, lead, done, unlisted=True)
+        if self._pending:  # places heard: read back for a yes before they go in the sheet
+            if not (places.progress or done):  # "શું?", unclear words, or a "હા" to something else
+                if reading.intent == "wait":
+                    return Reply(WAITING)
+                if self._no_headway(current, reading.intent):
+                    return self._give_up_on(current)
+            return self._read_back(lead, done)
+
+        upcoming = self._next()
         if upcoming != current:  # the current question is answered (or no longer applies)
-            lead = " ".join(p for p in (reply_to, self._ack(changed)) if p)
-            return self._move_on(upcoming, lead=lead, changed=changed)
-        if changed:  # a correction or an answer ahead of time; the current question still stands
-            heard = f"બરાબર, {_join_and([self._phrase(f) for f in changed])}."
-            return Reply(" ".join(p for p in (reply_to, heard, self.question) if p), changed=changed)
+            return self._move_on(upcoming, lead=lead, changed=done)
+        if done:  # a correction or an answer ahead of time; the current question still stands
+            said_back = [self._phrase(f) for f in done if f not in PLACE_FIELDS]
+            heard = f"બરાબર, {_join_and(said_back)}." if said_back else self._ack(done, places.confirmed)
+            return Reply(_join(reply_to, heard, self.question), changed=done)
         if reading.intent == "wait":
             return Reply(WAITING)
-
-        self._turns[current] += 1
-        if self._turns[current] >= MAX_TURNS:
+        if self._no_headway(current, reading.intent):
             return self._give_up_on(current)
         if reading.intent in ("repeat", "acknowledge"):
             return Reply(self.question)
         if reading.intent == "question":
             return Reply(f"{reply_to} {self.question}")
-        self._retries[current] += 1
-        if self._retries[current] > MAX_RETRIES:
-            return self._give_up_on(current)
         return Reply(self._ask_again(current))
 
     def didnt_hear(self) -> str:
         """Speech came through with no words in it: ask again, without counting it against them."""
         current = self.asked or FIELDS[0]
         self._turns[current] += 1
+        if self.confirming:
+            return self.confirmation
         return self._ask_again(current)
 
     def check_in(self) -> str:
@@ -171,17 +259,47 @@ class Survey:
 
     def note(self) -> str:
         """For the sheet's Notes column: how the call went, when that isn't obvious from the answers."""
-        unclear = [NOTE_LABELS[f] for f in FIELDS if f in self.skipped]
+        about_places = self._place_notes()
+        unclear = [NOTE_LABELS[f] for f in FIELDS if f in self.skipped and f not in about_places]
         if self.status == "completed":
-            return f"Unclear: {', '.join(unclear)}" if unclear else ""
-        if self.status == "partial":
+            how = f"Unclear: {', '.join(unclear)}" if unclear else ""
+        elif self.status == "partial":
             where = NOTE_LABELS.get(self.stopped_at or "", "")
-            return f"Call ended at the {where} question" if where else "Call ended early"
-        return {
-            "busy": "Busy: asked to be called later",
-            "declined": "Didn't want to take part",
-            "no_answer": "Picked up, but didn't answer",
-        }.get(self.status or "", "")
+            how = f"Call ended at the {where} question" if where else "Call ended early"
+        else:
+            how = {
+                "busy": "Busy: asked to be called later",
+                "declined": "Didn't want to take part",
+                "no_answer": "Picked up, but didn't answer",
+            }.get(self.status or "", "")
+        return "; ".join(n for n in (how, *about_places.values(), *self._mismatches()) if n)
+
+    def _place_notes(self) -> dict[str, str]:
+        """A place that never made it into the sheet, and why: not in the list, or not confirmed."""
+        notes: dict[str, str] = {}
+        for f in PLACE_FIELDS:
+            label = NOTE_LABELS[f].capitalize()
+            if f in self._pending:
+                notes[f] = f"{label} not confirmed (heard: {self._pending[f].sheet})"
+            elif f in self._unlisted and getattr(self.answers, f) is None:
+                notes[f] = f"{label} not in the list (heard: {self._unlisted[f]})"
+        return notes
+
+    def _mismatches(self) -> list[str]:
+        """Confirmed places that don't go together in the list: worth a look, though the person
+        confirmed each one (a village can be named after its old taluka)."""
+        if self.places is None:
+            return []
+        found = {f: p.match for f, p in self._confirmed.items() if p.match is not None}
+        village, taluka, district = (found.get(f) for f in PLACE_FIELDS)
+        notes = []
+        if village and taluka and not self.places.village_in_taluka(village, taluka):
+            notes.append(f"Check: no {village.place.name} in {taluka.place.name} taluka in the list")
+        if taluka and district and not self.places.taluka_in_district(taluka, district):
+            where = taluka.place.district
+            said = district.place.name
+            notes.append(f"Check: {taluka.place.name} taluka is in {where} district, not {said}")
+        return notes
 
     # What has been answered -------------------------------------------------------------------
 
@@ -230,10 +348,13 @@ class Survey:
         return next((f for f in FIELDS if not self.is_done(f)), None)
 
     def _apply(self, values: dict[str, object]) -> tuple[str, ...]:
-        """Take every answer in the turn, wherever it belongs. Returns the fields that changed."""
+        """Take every answer in the turn, wherever it belongs, except places (see _hear_places).
+        Returns the fields that changed."""
         a = self.answers
         changed: set[str] = set()
         for name in TEXT_FIELDS:
+            if name in PLACE_FIELDS:
+                continue  # a place goes in only once it's confirmed: see _hear_places
             value = values.get(name)
             if isinstance(value, str) and value and value != getattr(a, name):
                 setattr(a, name, value)
@@ -266,8 +387,6 @@ class Survey:
             ):
                 a.duration_note = minutes_note
                 changed.add("duration")
-        for name in changed:
-            self.skipped.discard(name)
         return tuple(f for f in FIELDS if f in changed)
 
     def _move_on(self, upcoming: str | None, *, lead: str, changed: tuple[str, ...] = ()) -> Reply:
@@ -289,9 +408,17 @@ class Survey:
         question = QUESTIONS[current]
         return question.again if self._reasks[current] % 2 else f"{ONCE_MORE} {question.ask}"
 
-    def _give_up_on(self, current: str) -> Reply:
+    def _no_headway(self, current: str, intent: str) -> bool:
+        """Count a turn that got nowhere. True once the question has had enough of them."""
+        self._turns[current] += 1
+        if intent not in ("repeat", "acknowledge", "question"):
+            self._retries[current] += 1
+        return self._turns[current] >= MAX_TURNS or self._retries[current] > MAX_RETRIES
+
+    def _give_up_on(self, current: str, *, lead: str = "", changed: tuple[str, ...] = ()) -> Reply:
         self.skipped.add(current)
-        return self._move_on(self._next(), lead=MOVE_ON)
+        self._pending.clear()
+        return self._move_on(self._next(), lead=_join(lead, MOVE_ON), changed=changed)
 
     def _finish(self, status: Status, line: str, changed: tuple[str, ...] = ()) -> Reply:
         self.status = status
@@ -312,43 +439,148 @@ class Survey:
             return self.script.why()
         return DONT_KNOW
 
-    def _ack(self, changed: tuple[str, ...]) -> str:
-        """Say back what was just answered, so a misheard name or place gets corrected now."""
-        shown = [f for f in changed if self._phrase(f)]
+    def _ack(self, changed: tuple[str, ...], confirmed: Sequence[str] = ()) -> str:
+        """Say back what was just answered, so a misheard name gets corrected now. A place has been
+        read back and agreed to already: it gets a plain "સરસ." instead."""
+        shown = [f for f in changed if f not in PLACE_FIELDS and self._phrase(f)]
         if not shown:
-            return ""
+            return CONFIRMED[confirmed[-1]] if confirmed else ""
         if len(shown) > 1:
             return f"બરાબર, {_join_and([self._phrase(f) for f in shown])}."
         a, only = self.answers, shown[0]
         if only == "name":
             return f"આભાર, {a.name}."
-        if only == "village":
-            return f"સરસ, {a.village}."
-        if only == "taluka":
-            return f"{a.taluka} તાલુકો, બરાબર."
-        if only == "district":
-            return f"{a.district} જિલ્લો."
         if only == "water_supply":
             return "સારું." if a.water_supply else NO_WATER
         if only == "frequency":
             return f"{frequency_text(a.frequency_days, a.frequency_note)}, ઠીક છે."
         return f"{duration_text(a.duration_minutes, a.duration_note)}, બરાબર."
 
+    # Places: found in the list, read back, confirmed ----------------------------------------------
+
+    def _hear_places(self, reading: Reading, confirming: bool) -> _PlaceTurn:
+        """The places in a turn: a yes or no to those read back, and new ones, checked in the list."""
+        turn = _PlaceTurn()
+        said = {f: _wordings(reading.values, f) for f in PLACE_FIELDS}
+        if confirming:
+            for f in [f for f in PLACE_FIELDS if f in self._pending]:
+                heard = self._pending[f]
+                if said[f] and heard.sounds_like(said[f]):  # "ખાંભા" again, or "હા, ખાંભા"
+                    said[f] = []
+                    yes = reading.confirm is not False
+                elif said[f]:  # another name: a correction, checked and read back below
+                    del self._pending[f]
+                    continue
+                else:
+                    yes = reading.confirm is True
+                if yes:
+                    self._commit(heard)
+                    turn.confirmed.append(f)
+            if reading.confirm is False and self._pending and not any(said.values()):
+                turn.rejected = next(f for f in PLACE_FIELDS if f in self._pending)
+                self._pending.clear()
+        for f in PLACE_FIELDS:
+            if not said[f] or (f in self._confirmed and self._confirmed[f].sounds_like(said[f])):
+                continue  # nothing said, or the answer already given
+            if (heard := self._look_up(f, said[f])) is None:
+                self._unlisted[f] = said[f][0]
+                self._pending.pop(f, None)
+                turn.unlisted.append(f)
+            else:
+                self._pending[f] = heard
+                turn.heard.append(f)
+        if turn.confirmed:
+            turn.refined = [f for f in self._refine() if f not in turn.confirmed]
+        return turn
+
+    def _look_up(self, f: str, said: list[str]) -> HeardPlace | None:
+        if self.places is None:
+            return HeardPlace(f, said[0], said[0])
+        found = self.places.match(f, said, **self._context(f, confirmed_only=False))
+        if found is None:
+            return None
+        return HeardPlace(f, found.sheet, found.spoken, found, city=f == "village" and found.is_city)
+
+    def _context(self, f: str, *, confirmed_only: bool) -> dict[str, Match | None]:
+        """The other places, as found: what narrows down which place of a name is meant."""
+        context: dict[str, Match | None] = {}
+        for other in PLACE_FIELDS:
+            if other == f:
+                continue
+            heard = (
+                self._confirmed.get(other)
+                if confirmed_only
+                else self._pending.get(other, self._confirmed.get(other))
+            )
+            context[other] = heard.match if heard else None
+        return context
+
+    def _commit(self, heard: HeardPlace) -> None:
+        setattr(self.answers, heard.field, heard.sheet)
+        self._confirmed[heard.field] = heard
+        self._pending.pop(heard.field, None)
+        self._unlisted.pop(heard.field, None)
+
+    def _refine(self) -> list[str]:
+        """Which place of a confirmed name is meant, now that more is confirmed: the Navagam in their
+        taluka, the Kalol in their district. Returns the fields whose sheet value changed."""
+        if self.places is None:
+            return []
+        changed = []
+        for f, heard in list(self._confirmed.items()):
+            if heard.match is None or len(heard.match.places) < 2:
+                continue
+            better = self.places.rank(heard.match, **self._context(f, confirmed_only=True))
+            if better.place == heard.match.place:
+                continue
+            self._confirmed[f] = replace(heard, match=better, sheet=better.sheet)
+            if better.sheet != getattr(self.answers, f):
+                setattr(self.answers, f, better.sheet)
+                changed.append(f)
+        return changed
+
+    def _read_back(self, lead: str, changed: tuple[str, ...]) -> Reply:
+        """The places heard, read back for a yes: "તમારું ગામ ખાંભા, બરાબર?"."""
+        heard = [self._pending[f] for f in PLACE_FIELDS if f in self._pending]
+        if len(heard) == 1:
+            question = CONFIRM_PLACE["city" if heard[0].city else heard[0].field].format(heard[0].spoken)
+        else:
+            phrases = [PLACE_PHRASES["city" if h.city else h.field].format(h.spoken) for h in heard]
+            question = CONFIRM_SEVERAL.format(_join_and(phrases))
+        self._confirming = True
+        self.confirmation = question
+        return Reply(_join(lead, question), changed=changed)
+
+    def _ask_for_place(self, f: str, lead: str, changed: tuple[str, ...], *, unlisted: bool = False) -> Reply:
+        """A place read back was wrong, or isn't in the list: ask for it again, or in the end move on."""
+        self._retries[f] += 1
+        if self._retries[f] > MAX_RETRIES:
+            return self._give_up_on(f, lead=lead, changed=changed)
+        self.asked = f
+        if unlisted and f not in self._told_unlisted:
+            self._told_unlisted.add(f)
+            return Reply(_join(lead, QUESTIONS[f].unlisted), changed=changed)
+        return Reply(_join(lead, self._ask_again(f)), changed=changed)
+
     def _phrase(self, field_name: str) -> str:
         a = self.answers
         if field_name == "name":
             return a.name or ""
-        if field_name == "village":
-            return f"{a.village} ગામ" if a.village else ""
-        if field_name == "taluka":
-            return f"{a.taluka} તાલુકો" if a.taluka else ""
-        if field_name == "district":
-            return f"{a.district} જિલ્લો" if a.district else ""
         if field_name == "water_supply":
             return "" if a.water_supply is None else "પાણી આવે છે" if a.water_supply else "પાણી નથી આવતું"
         if field_name == "frequency":
             return frequency_text(a.frequency_days, a.frequency_note) or ""
         return duration_text(a.duration_minutes, a.duration_note) or ""
+
+
+def _join(*parts: str) -> str:
+    return " ".join(p for p in parts if p)
+
+
+def _wordings(values: dict[str, object], f: str) -> list[str]:
+    """The ways a place came through in a reading: their words in Gujarati, the LLM's spelling."""
+    found = [values.get(f), values.get(SPELLING_KEYS[f])]
+    return [w for w in found if isinstance(w, str) and w.strip()]
 
 
 def _join_and(items: list[str]) -> str:

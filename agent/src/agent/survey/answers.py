@@ -219,6 +219,28 @@ def yes_or_no(text: str, *, strict: bool = False) -> bool | None:
     return yes
 
 
+# Yes or no to a place read back: "ખાંભા તાલુકો, બરાબર?"
+_RIGHT = {
+    "હા", "હાં", "હાજી", "હોવે", "હો", "હમ્મ", "બરાબર", "બરોબર", "સાચું", "સાચુ", "સાચી", "હાસ્તો", "ઠીક",
+    "એજ", "ઓકે", "yes", "yeah", "yep", "ok", "okay", "right", "correct", "haa", "haan", "ha",
+}  # fmt: skip
+_WRONG = {"ના", "નહીં", "નહિ", "નઈ", "નથી", "ખોટું", "ખોટુ", "ખોટો", "ગલત", "no", "nahi", "nai", "nope", "wrong"}
+_CONFIRM_EXTRA = {
+    "જી", "છે", "એ", "જ", "તો", "વાત", "ભાઈ", "બેન", "સાહેબ", "બિલકુલ", "એકદમ", "હોં", "ને", "બોલો",
+    "sir", "ji", "is", "it", "that", "that's", "thats",
+}  # fmt: skip
+
+
+def confirmation(text: str) -> tuple[bool | None, str]:
+    """A yes or no to a place read back, and any other words with it: (False, "ખંભાળિયા") for
+    "ના, ખંભાળિયા"; (True, "") for "હા, બરાબર"; None when it's neither, or both."""
+    tokens = _tokens(text)
+    yes = any(t in _RIGHT for t in tokens)
+    no = any(t in _WRONG for t in tokens)
+    rest = " ".join(t for t in tokens if t not in _RIGHT | _WRONG | _CONFIRM_EXTRA)
+    return (None if yes == no else yes), rest
+
+
 # Every how many days.
 _DAILY = {"રોજ", "રોજે", "દરરોજ", "રોજેરોજ", "રોજનું", "રોજનો", "daily", "everyday", "ડેઇલી", "ડેલી"}
 _ALTERNATE = {"એકાંતરે", "એકાંતરા", "આંતરે", "આંતરા", "alternate", "અલ્ટરનેટ"}

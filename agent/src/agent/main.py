@@ -45,6 +45,7 @@ from agent.llm_setup import build_llm
 from agent.metrics import LatencyTracker, Turn
 from agent.outbound import CALLEE, CallRequest, dial, new_call_id, outcome_of_failed_dial
 from agent.phone import masked
+from agent.places import load_places
 from agent.settings import agent_name, seconds, stamp
 from agent.sheets import ANSWER_KEYS, CALLING, ContactSheet, open_sheet
 from agent.survey.agent import SurveyAgent
@@ -172,6 +173,8 @@ def prewarm(proc: JobProcess) -> None:
     # Loaded once per worker process, not once per call. End-of-turn detection starts only after this
     # much silence; the turn detector decides whether the person has actually finished.
     proc.userdata["vad"] = silero.VAD.load(min_silence_duration=seconds("VAD_MIN_SILENCE_SECONDS", 0.3))
+    # Gujarat's places, to check each village, taluka and district against before it's confirmed.
+    proc.userdata["places"] = load_places()
 
 
 server = AgentServer(setup_fnc=prewarm)
@@ -217,7 +220,7 @@ async def entrypoint(ctx: JobContext) -> None:
     call_stamp = {"call_id": call_id, "last_call": stamp(started_at)}
     max_call_seconds = seconds("MAX_CALL_SECONDS", 240)
 
-    survey = Survey(Script.from_env())
+    survey = Survey(Script.from_env(), places=ctx.proc.userdata.get("places"))
     try:
         session_llm, llm_label = build_llm()
         hearing = build_hearing("phone" if request.outbound else "browser")

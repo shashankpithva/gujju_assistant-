@@ -9,6 +9,7 @@ dependencies = [
     "livekit-agents[deepgram,google,groq,sarvam,silero]>=1.8.9",
     "livekit-plugins-noise-cancellation>=0.3.2",
     "python-dotenv>=1.2.4",
+    "rapidfuzz>=3.9",
     "tzdata>=2026.5",
 ]
 

@@ -11,10 +11,11 @@ import pytest
 from livekit.agents import AgentSession, StopResponse
 from livekit.agents.llm import ChatContext, ChatMessage
 
+from agent.places import gujarat
 from agent.survey.agent import SurveyAgent, last_agent_line, words_since_agent_spoke
 from agent.survey.flow import Survey
 from agent.survey.reader import AnswerReader
-from agent.survey.script import BUSY, QUESTIONS, RECORDED, TO_WATER
+from agent.survey.script import BUSY, CONFIRMED, QUESTIONS, RECORDED, TO_WATER
 from tests.conftest import ScriptedLLM
 
 ANSWERS = {
@@ -30,7 +31,7 @@ ANSWERS = {
 
 async def converse(said: list[str], *, survey: Survey | None = None, model: ScriptedLLM | None = None):
     """Run the opening, then each thing the person says; returns the agent's reply to each."""
-    survey = survey or Survey()
+    survey = survey or Survey(places=gujarat())
     model = model or ScriptedLLM(ANSWERS)
     goodbyes = []
     agent = SurveyAgent(survey, AnswerReader(model), on_goodbye=goodbyes.append)
@@ -49,22 +50,39 @@ async def converse(said: list[str], *, survey: Survey | None = None, model: Scri
 
 async def test_a_whole_survey_from_name_to_goodbye():
     survey, replies, goodbyes, model = await converse(
-        ["હા બોલો", "મારું નામ રમેશભાઈ પટેલ", "ખાંભા", "ખાંભા જ", "અમરેલી", "હા આવે છે", "એકાંતરે", "એક કલાક"]
+        [
+            "હા બોલો",
+            "મારું નામ રમેશભાઈ પટેલ",
+            "ખાંભા",
+            "હા",
+            "ખાંભા જ",
+            "હા બરાબર",
+            "અમરેલી",
+            "હા",
+            "હા આવે છે",
+            "એકાંતરે",
+            "એક કલાક",
+        ]
     )
     assert replies[0] == [QUESTIONS["name"].ask]
     assert replies[1] == [f"આભાર, રમેશભાઈ પટેલ. {QUESTIONS['village'].ask}"]
-    assert replies[4] == [f"અમરેલી જિલ્લો. {TO_WATER} {QUESTIONS['water_supply'].ask}"]
-    assert replies[7][0].startswith("1 કલાક, બરાબર.") and RECORDED in replies[7][0]
+    assert replies[2] == ["તમારું ગામ ખાંભા, બરાબર?"]
+    assert replies[3] == [f"{CONFIRMED['village']} {QUESTIONS['taluka'].ask}"]
+    assert replies[4] == ["ખાંભા તાલુકો, બરાબર?"]
+    assert replies[6] == ["અમરેલી જિલ્લો, બરાબર?"]
+    assert replies[7] == [f"{CONFIRMED['district']} {TO_WATER} {QUESTIONS['water_supply'].ask}"]
+    assert replies[10][0].startswith("1 કલાક, બરાબર.") and RECORDED in replies[10][0]
     assert survey.status == "completed" and len(goodbyes) == 1
-    # Names and places went to the LLM; "હા", "એકાંતરે" and "એક કલાક" didn't need it.
+    assert survey.sheet_values()["district"] == "અમરેલી (Amreli)"
+    # Names and places went to the LLM; each "હા", "એકાંતરે" and "એક કલાક" didn't need it.
     assert len(model.requests) == 5
 
 
 async def test_after_the_name_the_survey_goes_straight_on():
     # The reported bug: after the name, the old agent stalled. Here the next question always comes.
     survey, replies, _, _ = await converse(["રમેશ", "ખાંભા"])
-    assert replies == [[f"આભાર, રમેશ. {QUESTIONS['village'].ask}"], [f"સરસ, ખાંભા. {QUESTIONS['taluka'].ask}"]]
-    assert survey.asked == "taluka"
+    assert replies == [[f"આભાર, રમેશ. {QUESTIONS['village'].ask}"], ["તમારું ગામ ખાંભા, બરાબર?"]]
+    assert survey.confirming
 
 
 async def test_after_the_name_an_unclear_answer_gets_the_question_again():
@@ -73,9 +91,10 @@ async def test_after_the_name_an_unclear_answer_gets_the_question_again():
 
 
 async def test_the_llm_being_down_doesnt_stop_the_survey():
-    survey, replies, _, _ = await converse(["રમેશ", "ખાંભા"], model=ScriptedLLM(fail=True))
+    survey, replies, _, _ = await converse(["રમેશ", "ખાંભા", "હા"], model=ScriptedLLM(fail=True))
     assert replies[0] == [f"આભાર, રમેશ. {QUESTIONS['village'].ask}"]
-    assert survey.answers.village == "ખાંભા"
+    assert replies[1] == ["તમારું ગામ ખાંભા, બરાબર?"]
+    assert survey.answers.village == "ખાંભા (Khambha)"
 
 
 async def test_the_goodbye_is_said_whole_and_ends_the_call():

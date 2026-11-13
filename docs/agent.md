@@ -20,20 +20,22 @@ After the person picks up and says "હેલો?", the agent introduces itself 
 | # | Question | Example answers | In the sheet |
 |---|---|---|---|
 | 1 | તમારું નામ શું છે? | મારું નામ રમેશભાઈ પટેલ | રમેશભાઈ પટેલ |
-| 2 | તમારું ગામ કયું છે? | ખાંભા | ખાંભા |
-| 3 | તાલુકો કયો છે? | ખાંભા જ | ખાંભા |
-| 4 | અને જિલ્લો કયો છે? | અમરેલી | અમરેલી |
+| 2 | તમારું ગામ કે શહેર કયું છે? | ખાંભા | ખાંભા (Khambha) |
+| 3 | તાલુકો કયો છે? | ખાંભા જ | ખાંભા (Khambha) |
+| 4 | અને જિલ્લો કયો છે? | અમરેલી | અમરેલી (Amreli) |
 | 5 | તમારે ત્યાં પાણી આવે છે? | હા / ના | હા / ના |
 | 6 | પાણી કેટલા દિવસે આવે છે? | રોજ, એકાંતરે, ત્રણ દિવસે એક વાર | રોજ, એકાંતરે (દર 2 દિવસે) |
 | 7 | દિવસમાં કેટલો સમય પાણી આવે છે? | અડધો કલાક, સવારે છ થી આઠ | અડધો કલાક (30 મિનિટ) |
 
-If water doesn't come, questions 6 and 7 are skipped. A call goes like this:
+If water doesn't come, questions 6 and 7 are skipped. Each village, taluka and district is checked against the list of Gujarat's places and read back, and goes in the sheet only after the person says yes ([below](#places-checked-and-confirmed)). A call goes like this:
 
 > **AI:** નમસ્તે! હું ગ્રામ પંચાયત તરફથી AI આસિસ્ટન્ટ બોલું છું. પાણીની સુવિધા વિશે બે મિનિટનો નાનો સર્વે છે. તમારું નામ શું છે?<br>
 > **Person:** મારું નામ રમેશભાઈ પટેલ.<br>
-> **AI:** આભાર, રમેશભાઈ પટેલ. તમારું ગામ કયું છે?<br>
+> **AI:** આભાર, રમેશભાઈ પટેલ. તમારું ગામ કે શહેર કયું છે?<br>
 > **Person:** ખાંભા, તાલુકો ખાંભા ને જિલ્લો અમરેલી.<br>
-> **AI:** બરાબર, ખાંભા ગામ, ખાંભા તાલુકો અને અમરેલી જિલ્લો. હવે પાણી વિશે પૂછું. તમારે ત્યાં પાણી આવે છે?<br>
+> **AI:** ખાંભા ગામ, ખાંભા તાલુકો અને અમરેલી જિલ્લો, બરાબર?<br>
+> **Person:** હા.<br>
+> **AI:** સારું. હવે પાણી વિશે પૂછું. તમારે ત્યાં પાણી આવે છે?<br>
 > **Person:** હા, એકાંતરે આવે છે.<br>
 > **AI:** બરાબર, પાણી આવે છે અને એકાંતરે. દિવસમાં કેટલો સમય પાણી આવે છે?<br>
 > **Person:** માંડ અડધો કલાક.<br>
@@ -41,13 +43,28 @@ If water doesn't come, questions 6 and 7 are skipped. A call goes like this:
 
 What it handles:
 - **Several answers at once**, as above, and **corrections** ("ના, ગામ ખાંભા નહીં, ખંભાળિયા") at any point.
-- **Saying back** each name and place, so a misheard one gets corrected straight away.
+- **Saying back** each answer, so a misheard one gets corrected straight away. Places wait for a yes.
 - **"શું?"** repeats the question. **"તમે કોણ બોલો છો?"** and **"આ શેના માટે?"** get an answer, then the question again.
 - **Unclear answers** get the question in other words. After three tries the survey moves on and the sheet says `(સ્પષ્ટ નથી)`, so a call never goes round in circles.
 - **"એક મિનિટ"** (hold on): it waits, and is three times as patient with the silence.
 - **"હું બિઝી છું, પછી ફોન કરજો"** ends politely as `busy`, to be called again. **Not interested** ends as `declined`.
 - **Silence**: "હેલો, તમને મારો અવાજ સંભળાય છે?", then goodbye if there's still nothing.
 - **A hang-up** keeps whatever was answered, as `partial`.
+
+## Places: checked and confirmed
+
+The agent knows every district (34), taluka (299), village (19,105) and town (168) in Gujarat, from the government's Local Government Directory as of May 2026, so it has Vav-Tharad and the talukas made in October 2025. Where the list comes from, and how to update it: [places/data/README.md](../agent/src/agent/places/data/README.md).
+
+For a village, taluka or district, the agent:
+
+1. **Finds it in the list by how it sounds**, so the spellings speech-to-text gives (ખાંભા, ખંભા) and English spellings (Khambha) find the same place. Speech-to-text often drops or changes a sound, so a near miss is found too, and the yes in step 2 catches a wrong guess. The village question also finds towns and cities, and some places have other names: Baroda is Vadodara, Rajpipla is Nandod taluka, Bhuj is Kachchh district.
+2. **Reads it back for a yes:** "તમારું ગામ ખાંભા, બરાબર?", "ખાંભા તાલુકો, બરાબર?", "અમરેલી જિલ્લો, બરાબર?". If they used another name for it, it reads back the official one ("બરોડા" is read back as "વડોદરા"), so they say yes to what goes in the sheet. Places said together are read back together.
+3. **Writes it only after a yes**, as `ખાંભા (Khambha)`: their own Gujarati, then the official name. "ના" asks for it again. "ના, ખંભાળિયા" checks the new name and reads that back.
+4. **Asks again if it isn't in the list:** "માફ કરજો, આ નામ મારી યાદીમાં નથી. ગામ કે શહેરનું નામ ફરીથી કહેશો?". After three tries it moves on. The cell says `(સ્પષ્ટ નથી)` and Notes says what was heard: `Village not in the list (heard: ...)`.
+
+Other places can share a name: there are 73 Navagams, and two Kalols. The taluka narrows down the village, and the district narrows down the taluka. If the person confirms places that don't fit together in the list (a village that's in a different taluka), each is still written as they said it, and Notes says `Check: ...`. If the call ends before a yes, the place isn't written; Notes says `Village not confirmed (heard: ...)`.
+
+`PLACE_CHECK=off` turns the list off: any name is read back as heard, and still needs a yes.
 
 ## The sheet
 
@@ -60,7 +77,7 @@ Put phone numbers in a column headed `Phone` (or `ફોન નંબર`, `Mobi
 | Status | dialer, agent | Empty: not called yet. `calling` during the call, then `completed`, `partial`, `busy`, `no_answer`, `declined` or `failed` |
 | Attempts | dialer | Calls made to this number |
 | Last call | dialer, agent | When, in `SURVEY_TIMEZONE` |
-| Notes | agent | How it went: `Busy or rejected (486 Busy Here)`, `Call ended at the village question`, `Unclear: name` |
+| Notes | agent | How it went: `Busy or rejected (486 Busy Here)`, `Call ended at the village question`, `Unclear: name`, `Village not in the list (heard: ...)` |
 | Call ID | agent | The call's id, as in the agent's log |
 | Transcript | agent | The whole conversation |
 
@@ -183,6 +200,7 @@ A deployed agent needs the Google Sheet: it can't see a CSV on your computer. Th
 | [survey/answers.py](../agent/src/agent/survey/answers.py) | Cleaning and checking answers; days and hours in Gujarati; how the sheet shows them |
 | [survey/agent.py](../agent/src/agent/survey/agent.py) | The LiveKit agent: one reading per turn, one line back |
 | [survey/controls.py](../agent/src/agent/survey/controls.py) | Silence, lost words, the time limit, hanging up |
+| [places/](../agent/src/agent/places/) | Gujarat's districts, talukas, villages and towns; finding a place by how its name sounds |
 | [survey/recorder.py](../agent/src/agent/survey/recorder.py) | Writes answers into the row in the background, during the call |
 | [sheets/](../agent/src/agent/sheets/) | Google Sheets and CSV: header detection, cells in, contacts out |
 | [main.py](../agent/src/agent/main.py) | One call: dial, wait for "હેલો?", run the survey, save the result |
@@ -213,6 +231,7 @@ All in [.env.example](../agent/.env.example), each explained in place. The ones 
 |---|---|---|
 | `SURVEY_ORG_NAME` | empty | Who the call is from, said in the introduction: `ગ્રામ પંચાયત` |
 | `SURVEY_PURPOSE` | about collecting water information | The answer to "why are you asking?" |
+| `PLACE_CHECK` | `on` | Check villages, talukas and districts against the list of Gujarat's places |
 | `SURVEY_CALL_HOURS` | `9-21` | When the dialer may call |
 | `MAX_CALL_SECONDS` | 240 | Longest call |
 | `SILENCE_CHECK_IN_SECONDS` | 8 | Silence before "હેલો, ... સંભળાય છે?", and again before hanging up |
@@ -228,9 +247,9 @@ uv run ruff format . && uv run ruff check . && uv run pytest -q    # what CI run
 uv run pytest evals -v                                             # the real LLM reading real answers
 ```
 
-[tests/](../agent/tests/) cover the flow, the reader, the rules, both sheets, the dialer and the call controls. [test_session.py](../agent/tests/test_session.py) runs whole surveys through LiveKit's own `AgentSession` with a scripted LLM, including the after-the-name cases and a failed LLM.
+[tests/](../agent/tests/) cover the flow, the reader, the rules, the list of places, both sheets, the dialer and the call controls. [test_session.py](../agent/tests/test_session.py) runs whole surveys through LiveKit's own `AgentSession` with a scripted LLM, including the after-the-name cases and a failed LLM.
 
-[evals/test_reading.py](../agent/evals/test_reading.py) gives the real LLM 24 answers as people really say them: names, places, corrections, numbers of days and hours, "hold on", busy, and "yes" to "can you hear me?". It uses one request per case, so it isn't in CI. Run it after changing the reader's instructions or the model, and compare models with `GROQ_MODELS=openai/gpt-oss-20b uv run pytest evals -v` or `LLM_PROVIDER=gemini`.
+[evals/test_reading.py](../agent/evals/test_reading.py) gives the real LLM 29 answers as people really say them: names, places, corrections, numbers of days and hours, "hold on", busy, "yes" to "can you hear me?", and yes or no to a place read back. It uses one request per case, so it isn't in CI. Run it after changing the reader's instructions or the model, and compare models with `GROQ_MODELS=openai/gpt-oss-20b uv run pytest evals -v` or `LLM_PROVIDER=gemini`.
 
 ## Latency
 

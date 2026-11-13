@@ -19,6 +19,7 @@ import pytest
 from dotenv import load_dotenv
 
 from agent.llm_setup import build_llm
+from agent.places import gujarat
 from agent.survey.flow import Reading, Survey
 from agent.survey.reader import AnswerReader
 from agent.survey.script import CHECK_IN, QUESTIONS
@@ -81,3 +82,32 @@ async def test_yes_to_can_you_hear_me_is_not_taken_as_water(reader):
     survey.asked = "water_supply"
     reading = await reader.read(survey, "હા, સંભળાય છે", last_line=CHECK_IN)
     assert "water_supply" not in reading.values, reading
+
+
+# (place read back, what they said, confirm, values that must be in the reading)
+READ_BACK_CASES = [
+    ("ખાંભા", "હા, એ જ", True, {}),
+    ("ખાંભા", "હા હા, બરાબર છે", True, {}),
+    ("ખાંભા", "ના, ખાંભા નહીં, ખંભાળિયા", False, {"village": "ખંભાળિયા"}),
+    ("ખાંભા", "ના ભાઈ", False, {}),
+]
+
+
+@pytest.mark.parametrize(("village", "said", "confirm", "values"), READ_BACK_CASES)
+async def test_the_llm_reads_a_yes_or_no_to_a_place_read_back(reader, village, said, confirm, values):
+    survey = Survey(places=gujarat())
+    survey.opening()
+    survey.respond(Reading("answer", {"name": "રમેશ"}))
+    survey.respond(Reading("answer", {"village": village}))
+    reading = await reader.read(survey, said, last_line=survey.confirmation)
+    assert reading.confirm is confirm, reading
+    for key, expected in values.items():
+        assert reading.values.get(key) == expected, reading
+
+
+async def test_the_llm_spells_a_place_in_english_too(reader):
+    survey = Survey()
+    survey.opening()
+    survey.asked = "taluka"
+    reading = await reader.read(survey, "ધ્રાંગધ્રા", last_line=QUESTIONS["taluka"].ask)
+    assert str(reading.values.get("taluka_en", "")).lower() == "dhrangadhra", reading
